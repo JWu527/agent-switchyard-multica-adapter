@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { runInspect } from "./commands/inspect.js";
 import { formatUnknownError, UserError } from "./lib/errors.js";
+import { MulticaCli } from "./lib/multica-cli.js";
 
 const program = new Command();
+const runner = new MulticaCli();
 
 program
   .name("switchyard-multica")
@@ -12,10 +15,9 @@ program
 program
   .command("inspect")
   .description("Inspect Multica config, skills, agents, and runtimes")
+  .option("--skill-name <name>", "Target skill name")
   .option("--json", "Output JSON")
-  .action(async () => {
-    console.log("inspect command is registered");
-  });
+  .action(async (options) => runInspect(runner, options));
 
 program.parseAsync(process.argv).catch((error: unknown) => {
   const exitCode = error instanceof UserError ? error.exitCode : 1;
