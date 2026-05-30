@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { runBind } from "./commands/bind.js";
 import { runInspect } from "./commands/inspect.js";
 import { runPublish } from "./commands/publish.js";
 import { runVerify } from "./commands/verify.js";
@@ -29,6 +30,18 @@ program
   .option("--dry-run", "Print planned writes without modifying Multica")
   .option("--json", "Output JSON")
   .action(async (options) => runPublish(runner, options));
+
+program
+  .command("bind")
+  .description("Append a Multica skill to existing agents")
+  .option("--skill-name <name>", "Skill name", "agent-switchyard")
+  .option("--agent <name-or-id>", "Agent name or id", (value, previous: string[] = []) => [
+    ...previous,
+    value
+  ], [])
+  .option("--dry-run", "Print planned writes without modifying Multica")
+  .option("--json", "Output JSON")
+  .action(async (options) => runBind(runner, options));
 
 program
   .command("verify")
