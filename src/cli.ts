@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { runInspect } from "./commands/inspect.js";
+import { runPublish } from "./commands/publish.js";
+import { runVerify } from "./commands/verify.js";
 import { formatUnknownError, UserError } from "./lib/errors.js";
 import { MulticaCli } from "./lib/multica-cli.js";
 
@@ -18,6 +20,24 @@ program
   .option("--skill-name <name>", "Target skill name")
   .option("--json", "Output JSON")
   .action(async (options) => runInspect(runner, options));
+
+program
+  .command("publish")
+  .description("Publish or update an Agent Switchyard skill in Multica")
+  .option("--source <dir>", "Agent Switchyard skill source directory")
+  .option("--skill-name <name>", "Skill name")
+  .option("--dry-run", "Print planned writes without modifying Multica")
+  .option("--json", "Output JSON")
+  .action(async (options) => runPublish(runner, options));
+
+program
+  .command("verify")
+  .description("Verify Multica skill content against local source")
+  .option("--source <dir>", "Agent Switchyard skill source directory")
+  .option("--skill-name <name>", "Skill name")
+  .option("--agent <name-or-id>", "Agent binding check (implemented by the bind/resolver task)")
+  .option("--json", "Output JSON")
+  .action(async (options) => runVerify(runner, options));
 
 program.parseAsync(process.argv).catch((error: unknown) => {
   const exitCode = error instanceof UserError ? error.exitCode : 1;
