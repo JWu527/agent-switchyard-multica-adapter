@@ -117,7 +117,10 @@ describe("runInspect", () => {
     expect(output).toContain("Agents: 1 available");
     expect(output).toContain("Runtimes: 1 available");
     expect(output).toContain("CLI workspace and browser workspace may differ");
-    expect(output).not.toContain("Target skill is not bound");
+    expect(output).toContain("Runtime online but no agent");
+    expect(output).toContain("Agent missing target skill");
+    expect(output).toContain("Missing CLI capabilities");
+    expect(output).not.toContain("Detected: target skill is not bound");
     expectOnlyReadCommands(runner.calls);
   });
 

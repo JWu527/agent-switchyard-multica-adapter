@@ -304,20 +304,26 @@ function printHuman(payload: InspectPayload): void {
   printList("Agent skill bindings", payload.agentSkillBindings);
   printList("Runtimes", payload.runtimes);
   console.log("");
-  console.log("Hints:");
+  console.log("Common hints:");
   console.log("- CLI workspace and browser workspace may differ; compare the workspace shown here with the Multica UI.");
+  console.log("- Runtime online but no agent: create or select an agent before binding skills.");
+  console.log("- Agent missing target skill: bind the target skill to the intended agent before using it.");
+  console.log("- Missing CLI capabilities: upgrade or check your Multica CLI installation when capabilities are unavailable.");
+  console.log("");
+  console.log("Diagnostic hints:");
   if (payload.missingInformation.includes("Multica CLI is missing some inspect capabilities")) {
-    console.log("- Multica CLI is missing some inspect capabilities; upgrade or check your CLI installation.");
+    console.log("- Detected: Multica CLI is missing some inspect capabilities; upgrade or check your CLI installation.");
   }
   if (payload.missingInformation.includes("runtime online but no agents found")) {
-    console.log("- Runtime is online but no agents were found; create or select an agent before binding skills.");
+    console.log("- Detected: runtime is online but no agents were found.");
   }
   if (payload.missingInformation.includes("target skill is not bound to any discovered agent")) {
-    console.log("- Target skill is not bound to any discovered agent.");
+    console.log("- Detected: target skill is not bound to any discovered agent.");
   }
   if (payload.missingInformation.includes("target skill binding status unavailable")) {
-    console.log("- Target skill binding status is unavailable from the discovered CLI output.");
+    console.log("- Detected: target skill binding status is unavailable from the discovered CLI output.");
   }
+  if (payload.missingInformation.length === 0) console.log("- No degraded diagnostics detected.");
 }
 
 export async function runInspect(runner: MulticaRunner, options: InspectOptions): Promise<void> {
