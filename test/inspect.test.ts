@@ -110,7 +110,9 @@ describe("runInspect", () => {
 
     const output = lines.join("\n");
     expect(runner.calls.slice(0, HELP_COMMANDS.length)).toEqual(HELP_COMMANDS);
-    expect(output).toContain("Capabilities: complete");
+    expect(output).toContain("Full capabilities: complete");
+    expect(output).toContain("Inspect capabilities: complete");
+    expect(output).toContain("Inspect status: complete");
     expect(output).toContain("Workspace: demo-workspace");
     expect(output).toContain("Skills: 1 available");
     expect(output).toContain("agent-switchyard");
@@ -139,7 +141,9 @@ describe("runInspect", () => {
     await runInspect(runner, { skillName: "agent-switchyard" });
 
     const output = lines.join("\n");
-    expect(output).toContain("Capabilities: degraded");
+    expect(output).toContain("Full capabilities: degraded");
+    expect(output).toContain("Inspect capabilities: degraded");
+    expect(output).toContain("Inspect status: degraded");
     expect(output).toContain("multica skill list --help");
     expect(output).toContain("Config: unavailable");
     expect(output).toContain("Skills: unavailable");
@@ -172,6 +176,65 @@ describe("runInspect", () => {
     expect(payload.degraded).toBe(true);
     expect(payload.missingInformation).toContain("runtime online but no agents found");
     expect(payload.missingInformation).toContain("target skill is not bound to any discovered agent");
+    expectOnlyReadCommands(runner.calls);
+  });
+
+  it("reports unknown target skill binding when binding list is unavailable and agents omit binding fields", async () => {
+    const runner = new FakeInspectRunner(
+      HELP_COMMANDS.filter((command) => command !== "multica agent skills list --help")
+    );
+    runner.runResponses.set("multica config show", ok('{"workspace":"demo-workspace"}'));
+    runner.jsonResponses.set("multica skill list --output json", [{ name: "agent-switchyard" }]);
+    runner.jsonResponses.set("multica agent list --output json", [{ name: "dev-agent" }]);
+    runner.jsonResponses.set("multica runtime list --output json", []);
+    const { lines } = captureLogs();
+
+    await runInspect(runner, { json: true, skillName: "agent-switchyard" });
+
+    const payload = JSON.parse(lines[0]);
+    expect(payload.degraded).toBe(true);
+    expect(payload.inspect.missingCapabilities).toContain("multica agent skills list --help");
+    expect(payload.missingInformation).toContain("target skill binding status unavailable");
+    expect(payload.missingInformation).not.toContain(
+      "target skill is not bound to any discovered agent"
+    );
+    expect(runner.calls).not.toContain("multica agent skills list --output json");
+    expectOnlyReadCommands(runner.calls);
+  });
+
+  it("does not degrade inspect when only write capabilities are missing", async () => {
+    const runner = new FakeInspectRunner(
+      HELP_COMMANDS.filter(
+        (command) =>
+          command !== "multica skill create --help" &&
+          command !== "multica skill update --help" &&
+          command !== "multica skill files upsert --help" &&
+          command !== "multica agent skills set --help"
+      )
+    );
+    runner.runResponses.set("multica config show", ok('{"workspace":"demo-workspace"}'));
+    runner.jsonResponses.set("multica skill list --output json", [{ name: "agent-switchyard" }]);
+    runner.jsonResponses.set("multica agent list --output json", [
+      { name: "dev-agent", skills: ["agent-switchyard"] }
+    ]);
+    runner.jsonResponses.set("multica agent skills list --output json", [
+      { agent: "dev-agent", skill: "agent-switchyard" }
+    ]);
+    runner.jsonResponses.set("multica runtime list --output json", []);
+    const { lines } = captureLogs();
+
+    await runInspect(runner, { json: true, skillName: "agent-switchyard" });
+
+    const payload = JSON.parse(lines[0]);
+    expect(payload.capabilities.missing).toEqual([
+      "multica skill create --help",
+      "multica skill update --help",
+      "multica skill files upsert --help",
+      "multica agent skills set --help"
+    ]);
+    expect(payload.inspect.missingCapabilities).toEqual([]);
+    expect(payload.degraded).toBe(false);
+    expect(payload.missingInformation).toEqual([]);
     expectOnlyReadCommands(runner.calls);
   });
 });

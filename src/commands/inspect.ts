@@ -1,4 +1,4 @@
-import { probeCapabilities, type CapabilityMap } from "../lib/capability-probe.js";
+import { probeCapabilities, type CapabilityKey, type CapabilityMap } from "../lib/capability-probe.js";
 import type { CommandResult, MulticaRunner } from "../lib/multica-cli.js";
 
 export interface InspectOptions {
@@ -36,6 +36,9 @@ type SafeListResult =
 
 interface InspectPayload {
   capabilities: CapabilityMap;
+  inspect: {
+    missingCapabilities: string[];
+  };
   config: SafeRunResult;
   skills: SafeListResult;
   agents: SafeListResult;
@@ -45,6 +48,17 @@ interface InspectPayload {
   degraded: boolean;
   missingInformation: string[];
 }
+
+type InspectCapabilityKey = Extract<CapabilityKey, "skillList" | "agentList" | "agentSkillsList" | "runtimeList">;
+
+const INSPECT_CAPABILITY_COMMANDS: Record<InspectCapabilityKey, string> = {
+  skillList: "multica skill list --help",
+  agentList: "multica agent list --help",
+  agentSkillsList: "multica agent skills list --help",
+  runtimeList: "multica runtime list --help"
+};
+
+const AGENT_BINDING_FIELD_KEYS = ["skills", "skillNames", "boundSkills", "skillBindings"] as const;
 
 function stringifyError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -194,11 +208,42 @@ function itemContainsSkill(item: unknown, skillName: string): boolean {
   return false;
 }
 
+function agentRecordBindingStatus(item: unknown, skillName: string): boolean | undefined {
+  if (item === null || typeof item !== "object") return undefined;
+
+  const record = item as Record<string, unknown>;
+  let sawBindingField = false;
+  for (const key of AGENT_BINDING_FIELD_KEYS) {
+    if (!(key in record)) continue;
+    sawBindingField = true;
+    const value = record[key];
+    if (Array.isArray(value)) {
+      if (value.some((entry) => itemContainsSkill(entry, skillName))) return true;
+    } else if (itemContainsSkill(value, skillName)) {
+      return true;
+    }
+  }
+
+  return sawBindingField ? false : undefined;
+}
+
+function agentListBindingStatus(agents: SafeListResult, skillName: string): boolean | undefined {
+  if (!agents.ok) return undefined;
+
+  let sawExplicitBindingField = false;
+  for (const agent of agents.result) {
+    const status = agentRecordBindingStatus(agent, skillName);
+    if (status === true) return true;
+    if (status === false) sawExplicitBindingField = true;
+  }
+
+  return sawExplicitBindingField ? false : undefined;
+}
+
 function hasSkillBinding(skillName: string, agents: SafeListResult, bindings: SafeListResult): boolean | undefined {
   if (bindings.ok && bindings.result.some((item) => itemContainsSkill(item, skillName))) return true;
-  if (agents.ok && agents.result.some((item) => itemContainsSkill(item, skillName))) return true;
-  if (bindings.ok || agents.ok) return false;
-  return undefined;
+  if (bindings.ok) return false;
+  return agentListBindingStatus(agents, skillName);
 }
 
 function onlineRuntimeCount(runtimes: SafeListResult): number {
@@ -215,7 +260,7 @@ function onlineRuntimeCount(runtimes: SafeListResult): number {
 function collectMissingInformation(payload: Omit<InspectPayload, "degraded" | "missingInformation">): string[] {
   const missing: string[] = [];
 
-  if (payload.capabilities.missing.length > 0) {
+  if (payload.inspect.missingCapabilities.length > 0) {
     missing.push("Multica CLI is missing some inspect capabilities");
   }
   if (!payload.config.ok) missing.push("config/current workspace unavailable");
@@ -242,7 +287,7 @@ function collectMissingInformation(payload: Omit<InspectPayload, "degraded" | "m
 
 function isDegraded(payload: Omit<InspectPayload, "degraded" | "missingInformation">, missingInformation: string[]): boolean {
   return (
-    payload.capabilities.missing.length > 0 ||
+    payload.inspect.missingCapabilities.length > 0 ||
     !payload.config.ok ||
     !payload.skills.ok ||
     !payload.agents.ok ||
@@ -250,6 +295,12 @@ function isDegraded(payload: Omit<InspectPayload, "degraded" | "missingInformati
     !payload.runtimes.ok ||
     missingInformation.length > 0
   );
+}
+
+function inspectMissingCapabilities(capabilities: CapabilityMap): string[] {
+  return (Object.keys(INSPECT_CAPABILITY_COMMANDS) as InspectCapabilityKey[])
+    .filter((key) => !capabilities[key])
+    .map((key) => INSPECT_CAPABILITY_COMMANDS[key]);
 }
 
 function formatItem(item: unknown): string {
@@ -293,9 +344,13 @@ function printHuman(payload: InspectPayload): void {
   }
   console.log(`Workspace: ${payload.config.ok && payload.config.workspace ? payload.config.workspace : "unavailable"}`);
   console.log("");
-  console.log(`Capabilities: ${payload.capabilities.missing.length === 0 ? "complete" : "degraded"}`);
+  console.log(`Full capabilities: ${payload.capabilities.missing.length === 0 ? "complete" : "degraded"}`);
   if (payload.capabilities.missing.length > 0) {
-    console.log(`Missing: ${payload.capabilities.missing.join(", ")}`);
+    console.log(`Full missing: ${payload.capabilities.missing.join(", ")}`);
+  }
+  console.log(`Inspect capabilities: ${payload.inspect.missingCapabilities.length === 0 ? "complete" : "degraded"}`);
+  if (payload.inspect.missingCapabilities.length > 0) {
+    console.log(`Inspect missing: ${payload.inspect.missingCapabilities.join(", ")}`);
   }
   console.log(`Inspect status: ${payload.degraded ? "degraded" : "complete"}`);
   console.log("");
@@ -328,6 +383,7 @@ function printHuman(payload: InspectPayload): void {
 
 export async function runInspect(runner: MulticaRunner, options: InspectOptions): Promise<void> {
   const capabilities = await probeCapabilities(runner);
+  const inspect = { missingCapabilities: inspectMissingCapabilities(capabilities) };
   const config = await safeRun(runner, ["config", "show"], "config show");
   const skills = capabilities.skillList
     ? await safeJsonArray(runner, ["skill", "list", "--output", "json"], "skill list")
@@ -344,6 +400,7 @@ export async function runInspect(runner: MulticaRunner, options: InspectOptions)
 
   const partialPayload = {
     capabilities,
+    inspect,
     config,
     skills,
     agents,
