@@ -119,6 +119,9 @@ describe("collectSkillSource", () => {
     await writeFile(join(root, "references", "secret.PEM"), "secret");
     await writeFile(join(root, "references", "aws_credentials.json"), "secret");
     await writeFile(join(root, "references", ".npmrc"), "secret");
+    await mkdir(join(root, "scripts", "__pycache__"), { recursive: true });
+    await writeFile(join(root, "scripts", "__pycache__", "check.cpython-313.pyc"), "\0binary");
+    await writeFile(join(root, "scripts", "old-runtime.pyc"), "\0binary");
     await writeFile(join(root, "references", "safe.md"), "safe\n");
 
     const result = await collectSkillSource(root, "agent-switchyard");
@@ -130,7 +133,9 @@ describe("collectSkillSource", () => {
       "scripts/TOKEN",
       "references/secret.PEM",
       "references/aws_credentials.json",
-      "references/.npmrc"
+      "references/.npmrc",
+      "scripts/__pycache__/check.cpython-313.pyc",
+      "scripts/old-runtime.pyc"
     ]) {
       expect(paths).not.toContain(sensitivePath);
     }

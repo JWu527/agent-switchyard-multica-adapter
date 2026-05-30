@@ -59,10 +59,11 @@ function isBlockedPath(rel: string): boolean {
   const parts = normalizedRel.split("/");
   const baseName = parts.at(-1) ?? "";
 
-  if (parts.includes(".git") || parts.includes("node_modules")) return true;
+  if (parts.includes(".git") || parts.includes("node_modules") || parts.includes("__pycache__")) return true;
   if (BLOCKED_EXACT_NAMES.has(baseName) || BLOCKED_DOTFILES.has(baseName)) return true;
   if (baseName.startsWith(".env.")) return true;
   if (baseName.endsWith(".tmp") || baseName.endsWith(".bak") || baseName.endsWith("~")) return true;
+  if (baseName.endsWith(".pyc") || baseName.endsWith(".pyo")) return true;
   if (baseName.endsWith(".pem") || baseName.endsWith(".key")) return true;
   if (parts.some((part) => part.includes("credential") || part.includes("token") || part.includes("secret"))) {
     return true;
