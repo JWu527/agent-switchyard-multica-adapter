@@ -213,6 +213,42 @@ describe("runPublish", () => {
     expect(runner.calls.some((call) => call.includes("--path SKILL.md"))).toBe(false);
   });
 
+  it("prints the human preflight plan before non-dry-run writes", async () => {
+    const root = await skillFixture();
+    const events: string[] = [];
+    const runner = new FakeMulticaRunner();
+    configureSkillList(runner, []);
+    runner.jsonResponses.set("multica skill create --name agent-switchyard --content # Skill\n --output json", () => {
+      events.push("write:skill-create");
+      expect(events.some((event) => event.startsWith("output:"))).toBe(true);
+      return {
+        id: "created-id",
+        name: "agent-switchyard"
+      };
+    });
+    runner.jsonResponses.set(
+      "multica skill files upsert created-id --path references/guide.md --content guide\n --output json",
+      { ok: true }
+    );
+    runner.jsonResponses.set(
+      "multica skill files upsert created-id --path scripts/install.sh --content #!/bin/sh\n --output json",
+      { ok: true }
+    );
+
+    await runPublish(runner, {
+      source: root,
+      skillName: "agent-switchyard",
+      output: (text) => events.push(`output:${text}`)
+    });
+
+    const firstOutputIndex = events.findIndex((event) => event.startsWith("output:"));
+    const firstWriteIndex = events.indexOf("write:skill-create");
+    expect(firstOutputIndex).toBeGreaterThanOrEqual(0);
+    expect(firstOutputIndex).toBeLessThan(firstWriteIndex);
+    expect(events[firstOutputIndex]).toContain("Files read: 4");
+    expect(events[firstOutputIndex]).toContain("Remote files to upsert:");
+  });
+
   it("updates an existing exact-name skill and upserts supporting files", async () => {
     const root = await skillFixture();
     const runner = new FakeMulticaRunner();
@@ -335,6 +371,39 @@ describe("runVerify", () => {
     expect(payload.diffs).toEqual([
       expect.objectContaining({ kind: "extra_remote", path: "references/extra.md" })
     ]);
+    expectNoWrites(runner.calls);
+  });
+
+  it("reports path-only remote extra files instead of hiding them", async () => {
+    const root = await skillFixture();
+    const runner = new FakeMulticaRunner();
+    configureSkillList(runner, [{ id: "skill-id", name: "agent-switchyard" }]);
+    configureSkillGet(runner, "skill-id", {
+      id: "skill-id",
+      name: "agent-switchyard",
+      content: "# Skill\n",
+      files: [
+        { path: "references/guide.md", content: "guide\n" },
+        { path: "references/path-only-extra.md" },
+        { path: "scripts/install.sh", content: "#!/bin/sh\n" }
+      ]
+    });
+    const { lines } = captureLogs();
+
+    await expect(runVerify(runner, { source: root, skillName: "agent-switchyard", json: true })).rejects.toThrow(
+      "Verification failed"
+    );
+
+    const payload = parseOnlyJsonLine(lines);
+    expect(payload).toMatchObject({
+      ok: false,
+      degraded: true,
+      diffCount: 1
+    });
+    expect(payload.diffs).toEqual([
+      expect.objectContaining({ kind: "extra_remote", path: "references/path-only-extra.md" })
+    ]);
+    expect(payload.notes).toContain("Some remote file entries had path only; content hashes are unavailable for those paths.");
     expectNoWrites(runner.calls);
   });
 

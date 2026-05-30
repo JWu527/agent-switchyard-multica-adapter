@@ -26,6 +26,8 @@ interface MulticaSkillDetail {
 }
 
 type VerificationLevel = "content" | "manifest-only" | "unavailable";
+const REMOTE_CONTENT_UNAVAILABLE_SHA = "<remote-content-unavailable>";
+const REMOTE_CONTENT_UNAVAILABLE_SIZE = -1;
 
 interface VerifyPayload {
   ok: boolean;
@@ -91,29 +93,56 @@ function recordFromContent(path: string, content: string): FileRecord {
   };
 }
 
-function recordFromRemoteFile(file: MulticaSkillFile): FileRecord | undefined {
+interface RemoteRecords {
+  records: FileRecord[];
+  contentUnavailablePaths: string[];
+}
+
+function recordFromRemoteFile(file: MulticaSkillFile): { record: FileRecord; contentUnavailable: boolean } | undefined {
   if (file.path === MANIFEST_PATH) return undefined;
   if (typeof file.sha256 === "string" && typeof file.size === "number") {
     return {
-      path: file.path,
-      sha256: file.sha256,
-      size: file.size
+      record: {
+        path: file.path,
+        sha256: file.sha256,
+        size: file.size
+      },
+      contentUnavailable: false
     };
   }
-  if (typeof file.content === "string") return recordFromContent(file.path, file.content);
-  return undefined;
+  if (typeof file.content === "string") {
+    return {
+      record: recordFromContent(file.path, file.content),
+      contentUnavailable: false
+    };
+  }
+  return {
+    record: {
+      path: file.path,
+      sha256: REMOTE_CONTENT_UNAVAILABLE_SHA,
+      size: REMOTE_CONTENT_UNAVAILABLE_SIZE
+    },
+    contentUnavailable: true
+  };
 }
 
-function remoteContentRecords(detail: MulticaSkillDetail): FileRecord[] {
+function remoteContentRecords(detail: MulticaSkillDetail): RemoteRecords {
   const records: FileRecord[] = [];
+  const contentUnavailablePaths: string[] = [];
   if (typeof detail.content === "string") records.push(recordFromContent("SKILL.md", detail.content));
 
   for (const file of detail.files ?? []) {
-    const record = recordFromRemoteFile(file);
-    if (record !== undefined) records.push(record);
+    const result = recordFromRemoteFile(file);
+    if (result !== undefined) {
+      records.push(result.record);
+      if (result.contentUnavailable) contentUnavailablePaths.push(result.record.path);
+    }
   }
 
-  return records.sort((a, b) => a.path.localeCompare(b.path));
+  return {
+    records: records.sort((a, b) => a.path.localeCompare(b.path)),
+    contentUnavailablePaths
+  };
 }
 
 function manifestFromRemote(detail: MulticaSkillDetail): SwitchyardMulticaManifest | undefined {
@@ -152,6 +181,12 @@ function manifestFromRemote(detail: MulticaSkillDetail): SwitchyardMulticaManife
 function hasRemoteRecordForEveryLocal(local: FileRecord[], remote: FileRecord[]): boolean {
   const remotePaths = new Set(remote.map((file) => file.path));
   return local.every((file) => remotePaths.has(file.path));
+}
+
+function mergeManifestWithObservedExtraFiles(manifestRecords: FileRecord[], observedRecords: FileRecord[]): FileRecord[] {
+  const manifestPaths = new Set(manifestRecords.map((file) => file.path));
+  const extras = observedRecords.filter((file) => !manifestPaths.has(file.path));
+  return [...manifestRecords, ...extras].sort((a, b) => a.path.localeCompare(b.path));
 }
 
 function outputPayload(payload: VerifyPayload, options: VerifyOptions): void {
@@ -199,24 +234,29 @@ export async function runVerify(runner: MulticaRunner, options: VerifyOptions): 
   if (skill === undefined) throw new UserError(`Skill not found in Multica: ${skillName}. Run publish first.`);
 
   const detail = await runner.json<MulticaSkillDetail>(["skill", "get", skill.id, "--output", "json"], "skill get");
-  const contentRecords = remoteContentRecords(detail);
+  const content = remoteContentRecords(detail);
   const remoteManifest = manifestFromRemote(detail);
-  const canVerifyContent = hasRemoteRecordForEveryLocal(localFileRecords, contentRecords);
+  const canVerifyContent =
+    content.contentUnavailablePaths.length === 0 && hasRemoteRecordForEveryLocal(localFileRecords, content.records);
 
   let verificationLevel: VerificationLevel;
   let remoteRecords: FileRecord[];
   const notes: string[] = [];
 
+  if (content.contentUnavailablePaths.length > 0) {
+    notes.push("Some remote file entries had path only; content hashes are unavailable for those paths.");
+  }
+
   if (canVerifyContent) {
     verificationLevel = "content";
-    remoteRecords = contentRecords;
+    remoteRecords = content.records;
   } else if (remoteManifest !== undefined) {
     verificationLevel = "manifest-only";
-    remoteRecords = localRecords(remoteManifest);
+    remoteRecords = mergeManifestWithObservedExtraFiles(localRecords(remoteManifest), content.records);
     notes.push("Remote file content is unavailable; using remote manifest only.");
   } else {
     verificationLevel = "unavailable";
-    remoteRecords = contentRecords;
+    remoteRecords = content.records;
     notes.push("Remote file content is unavailable and no readable remote manifest was found.");
   }
 

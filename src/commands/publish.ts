@@ -23,6 +23,10 @@ interface PublishPlan {
   remoteFilesToUpsert: FilePlanEntry[];
 }
 
+type PublishOutput = PublishPlan & {
+  preflight?: PublishPlan;
+};
+
 interface FilePlanEntry {
   path: string;
   size: number;
@@ -99,45 +103,27 @@ function buildPlan(input: {
   };
 }
 
-function printHuman(plan: PublishPlan): void {
-  console.log(`Publish ${plan.dryRun ? "dry run" : "result"}: ${plan.action} ${plan.skillName}`);
-  if (plan.skillId !== undefined) console.log(`Skill ID: ${plan.skillId}`);
-  console.log(`Files read: ${plan.fileCount}`);
-  console.log(`Total size: ${plan.totalSize} bytes`);
-  console.log(`Source sha256: ${plan.sourceHash}`);
-  console.log("Local files:");
-  for (const file of plan.localFiles) {
-    console.log(`  - ${file.path} (${file.size} bytes, ${file.sha256})`);
-  }
-  console.log("Remote files to upsert:");
-  for (const file of plan.remoteFilesToUpsert) {
-    console.log(`  - ${file.path} (${file.size} bytes, ${file.sha256})`);
-  }
+function humanPlanText(plan: PublishPlan, title: string): string {
+  return [
+    `${title}: ${plan.action} ${plan.skillName}`,
+    ...(plan.skillId === undefined ? [] : [`Skill ID: ${plan.skillId}`]),
+    `Files read: ${plan.fileCount}`,
+    `Total size: ${plan.totalSize} bytes`,
+    `Source sha256: ${plan.sourceHash}`,
+    "Local files:",
+    ...plan.localFiles.map((file) => `  - ${file.path} (${file.size} bytes, ${file.sha256})`),
+    "Remote files to upsert:",
+    ...plan.remoteFilesToUpsert.map((file) => `  - ${file.path} (${file.size} bytes, ${file.sha256})`)
+  ].join("\n");
 }
 
-function outputPlan(plan: PublishPlan, options: PublishOptions): void {
+function outputPlan(plan: PublishOutput, options: PublishOptions, title?: string): void {
   if (options.json) {
     emit(options, JSON.stringify(plan, null, 2));
     return;
   }
 
-  if (options.output !== undefined) {
-    const lines = [
-      `Publish ${plan.dryRun ? "dry run" : "result"}: ${plan.action} ${plan.skillName}`,
-      ...(plan.skillId === undefined ? [] : [`Skill ID: ${plan.skillId}`]),
-      `Files read: ${plan.fileCount}`,
-      `Total size: ${plan.totalSize} bytes`,
-      `Source sha256: ${plan.sourceHash}`,
-      "Local files:",
-      ...plan.localFiles.map((file) => `  - ${file.path} (${file.size} bytes, ${file.sha256})`),
-      "Remote files to upsert:",
-      ...plan.remoteFilesToUpsert.map((file) => `  - ${file.path} (${file.size} bytes, ${file.sha256})`)
-    ];
-    emit(options, lines.join("\n"));
-    return;
-  }
-
-  printHuman(plan);
+  emit(options, humanPlanText(plan, title ?? `Publish ${plan.dryRun ? "dry run" : "result"}`));
 }
 
 async function listSkills(runner: MulticaRunner): Promise<MulticaSkill[]> {
@@ -185,6 +171,10 @@ export async function runPublish(runner: MulticaRunner, options: PublishOptions)
     return;
   }
 
+  if (!options.json) {
+    outputPlan(plan, options, "Publish preflight");
+  }
+
   const skillContent = findSkillContent(sourceBundle);
   let skillId = existing?.id;
 
@@ -206,5 +196,5 @@ export async function runPublish(runner: MulticaRunner, options: PublishOptions)
   }
 
   await upsertSupportingFiles(runner, skillId, supportingFiles(sourceBundle));
-  outputPlan({ ...plan, dryRun: false, skillId }, options);
+  outputPlan({ ...plan, dryRun: false, skillId, preflight: plan }, options);
 }
