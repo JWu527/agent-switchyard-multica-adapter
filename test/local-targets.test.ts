@@ -26,6 +26,15 @@ describe("resolveTargetDir", () => {
     );
   });
 
+  it("falls back to ~/.codex when CODEX_HOME is empty or blank", () => {
+    expect(resolveTargetDir("codex", "agent-switchyard", {}, "/Users/test", { CODEX_HOME: "" })).toBe(
+      "/Users/test/.codex/skills/agent-switchyard"
+    );
+    expect(resolveTargetDir("codex", "agent-switchyard", {}, "/Users/test", { CODEX_HOME: "  " })).toBe(
+      "/Users/test/.codex/skills/agent-switchyard"
+    );
+  });
+
   it("uses explicit target-dir overrides", () => {
     const overrides = parseTargetDirOverrides(["openclaw=/custom/openclaw"]);
 

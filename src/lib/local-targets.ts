@@ -48,7 +48,7 @@ export function resolveTargetDir(
     case "hermes":
       return join(home, ".hermes", "skills", skillName);
     case "codex":
-      return join(env.CODEX_HOME ?? join(home, ".codex"), "skills", skillName);
+      return join(env.CODEX_HOME?.trim() || join(home, ".codex"), "skills", skillName);
     case "claude":
       return join(home, ".claude", "skills", skillName);
   }
