@@ -138,6 +138,19 @@ async function listSkills(runner: MulticaRunner): Promise<MulticaSkill[]> {
   });
 }
 
+function skillIdFromCreateResponse(value: unknown, skillName: string): string {
+  if (value === null || typeof value !== "object") {
+    throw new UserError(`multica skill create did not return an object with a non-empty skill id for ${skillName}`);
+  }
+
+  const id = (value as Record<string, unknown>).id;
+  if (typeof id !== "string" || id.trim().length === 0) {
+    throw new UserError(`multica skill create did not return a non-empty skill id for ${skillName}`);
+  }
+
+  return id;
+}
+
 async function upsertSupportingFiles(
   runner: MulticaRunner,
   skillId: string,
@@ -179,11 +192,11 @@ export async function runPublish(runner: MulticaRunner, options: PublishOptions)
   let skillId = existing?.id;
 
   if (skillId === undefined) {
-    const created = await runner.json<MulticaSkill>(
+    const created = await runner.json<unknown>(
       ["skill", "create", "--name", skillName, "--content", skillContent, "--output", "json"],
       "skill create"
     );
-    skillId = created.id;
+    skillId = skillIdFromCreateResponse(created, skillName);
   } else {
     await runner.json(
       ["skill", "update", skillId, "--name", skillName, "--content", skillContent, "--output", "json"],

@@ -85,6 +85,61 @@ function normalizeSkillList(value: unknown): MulticaSkillSummary[] {
   });
 }
 
+function malformedFileEntry(index: number, reason: string): UserError {
+  return new UserError(`Malformed multica skill get file entry at index ${index}: ${reason}`);
+}
+
+function normalizeRemoteFile(value: unknown, index: number): MulticaSkillFile {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw malformedFileEntry(index, "expected an object with a string path");
+  }
+
+  const record = value as Record<string, unknown>;
+  const path = record.path;
+  if (typeof path !== "string" || path.trim().length === 0) {
+    throw malformedFileEntry(index, "missing non-empty string path");
+  }
+
+  const file: MulticaSkillFile = { path };
+  if (record.content !== undefined) {
+    if (typeof record.content !== "string") throw malformedFileEntry(index, "content must be a string when present");
+    file.content = record.content;
+  }
+  if (record.sha256 !== undefined) {
+    if (typeof record.sha256 !== "string") throw malformedFileEntry(index, "sha256 must be a string when present");
+    file.sha256 = record.sha256;
+  }
+  if (record.size !== undefined) {
+    if (typeof record.size !== "number") throw malformedFileEntry(index, "size must be a number when present");
+    file.size = record.size;
+  }
+
+  return file;
+}
+
+function normalizeSkillDetail(value: unknown): MulticaSkillDetail {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new UserError("Expected object from multica skill get");
+  }
+
+  const record = value as Record<string, unknown>;
+  if (record.content !== undefined && typeof record.content !== "string") {
+    throw new UserError("Expected multica skill get content to be a string when present");
+  }
+  if (record.files !== undefined && !Array.isArray(record.files)) {
+    throw new UserError("Expected multica skill get files to be an array when present");
+  }
+
+  return {
+    id: typeof record.id === "string" ? record.id : "",
+    name: typeof record.name === "string" ? record.name : "",
+    content: typeof record.content === "string" ? record.content : undefined,
+    files: Array.isArray(record.files)
+      ? record.files.map((file, index) => normalizeRemoteFile(file, index))
+      : []
+  };
+}
+
 function recordFromContent(path: string, content: string): FileRecord {
   return {
     path,
@@ -233,7 +288,9 @@ export async function runVerify(runner: MulticaRunner, options: VerifyOptions): 
   const skill = skills.find((candidate) => candidate.name === skillName);
   if (skill === undefined) throw new UserError(`Skill not found in Multica: ${skillName}. Run publish first.`);
 
-  const detail = await runner.json<MulticaSkillDetail>(["skill", "get", skill.id, "--output", "json"], "skill get");
+  const detail = normalizeSkillDetail(
+    await runner.json<unknown>(["skill", "get", skill.id, "--output", "json"], "skill get")
+  );
   const content = remoteContentRecords(detail);
   const remoteManifest = manifestFromRemote(detail);
   const canVerifyContent =

@@ -34,16 +34,31 @@ interface SkillSummary {
 
 interface SkillDetail extends SkillSummary {
   content?: string;
-  files?: Array<{
-    path: string;
-    content?: string;
-    sha256?: string;
-    size?: number;
-  }>;
+  files?: unknown;
 }
 
 function commandString(args: string[]): string {
   return ["multica", ...args].join(" ");
+}
+
+function argsKey(args: string[]): string {
+  return JSON.stringify(args);
+}
+
+function setJsonResponse(runner: FakeMulticaRunner, args: string[], response: unknown): void {
+  runner.jsonResponses.set(argsKey(args), response);
+}
+
+function startsWithArgs(args: string[], prefix: string[]): boolean {
+  return prefix.every((value, index) => args[index] === value);
+}
+
+function countCallsStartingWith(calls: string[][], prefix: string[]): number {
+  return calls.filter((args) => startsWithArgs(args, prefix) && !isHelpArgs(args)).length;
+}
+
+function isHelpArgs(args: string[]): boolean {
+  return args.at(-1) === "--help";
 }
 
 function ok(stdout = ""): CommandResult {
@@ -55,7 +70,7 @@ function fail(stderr: string, stdout = ""): CommandResult {
 }
 
 class FakeMulticaRunner implements MulticaRunner {
-  readonly calls: string[] = [];
+  readonly calls: string[][] = [];
   readonly helpCommands: Set<string>;
   readonly jsonResponses = new Map<string, unknown>();
 
@@ -65,7 +80,7 @@ class FakeMulticaRunner implements MulticaRunner {
 
   async run(args: string[]): Promise<CommandResult> {
     const command = commandString(args);
-    this.calls.push(command);
+    this.calls.push([...args]);
 
     if (command.endsWith(" --help")) {
       return this.helpCommands.has(command) ? ok(`${command} help`) : fail("not supported");
@@ -75,10 +90,10 @@ class FakeMulticaRunner implements MulticaRunner {
   }
 
   async json<T>(args: string[]): Promise<T> {
-    const command = commandString(args);
-    this.calls.push(command);
+    const key = argsKey(args);
+    this.calls.push([...args]);
 
-    if (!this.jsonResponses.has(command)) {
+    if (!this.jsonResponses.has(key)) {
       if (
         args[0] === "skill" &&
         args[1] === "files" &&
@@ -91,10 +106,10 @@ class FakeMulticaRunner implements MulticaRunner {
         return { ok: true } as T;
       }
 
-      throw new Error(`unexpected json command: ${command}`);
+      throw new Error(`unexpected json command: ${commandString(args)}`);
     }
 
-    const response = this.jsonResponses.get(command);
+    const response = this.jsonResponses.get(key);
     if (typeof response === "function") {
       return (response as (args: string[]) => T)(args);
     }
@@ -113,6 +128,16 @@ async function skillFixture() {
   return root;
 }
 
+async function argvFixture() {
+  const root = mkdtempSync(join(tmpdir(), "switchyard-argv-fixture-"));
+  await mkdir(join(root, "references"), { recursive: true });
+  await mkdir(join(root, "scripts"), { recursive: true });
+  await writeFile(join(root, "SKILL.md"), "# Skill\nSecond line --not-a-flag\n");
+  await writeFile(join(root, "references", "guide with spaces-and-dashes.md"), "guide\n--literal value\n");
+  await writeFile(join(root, "scripts", "install tricky-name.sh"), "#!/bin/sh\necho \"hello --there\"\n");
+  return root;
+}
+
 function captureLogs() {
   const lines: string[] = [];
   const spy = vi.spyOn(console, "log").mockImplementation((value = "") => {
@@ -126,21 +151,24 @@ function parseOnlyJsonLine(lines: string[]) {
   return JSON.parse(lines[0]) as Record<string, unknown>;
 }
 
-function expectNoWrites(calls: string[]): void {
+function expectNoWrites(calls: string[][]): void {
   const writes = calls.filter(
-    (command) =>
-      !command.endsWith(" --help") &&
-      /\b(skill create|skill update|skill files upsert|agent skills set)\b/.test(command)
+    (args) =>
+      !isHelpArgs(args) &&
+      (startsWithArgs(args, ["skill", "create"]) ||
+        startsWithArgs(args, ["skill", "update"]) ||
+        startsWithArgs(args, ["skill", "files", "upsert"]) ||
+        startsWithArgs(args, ["agent", "skills", "set"]))
   );
   expect(writes).toEqual([]);
 }
 
 function configureSkillList(runner: FakeMulticaRunner, skills: SkillSummary[]): void {
-  runner.jsonResponses.set("multica skill list --output json", skills);
+  setJsonResponse(runner, ["skill", "list", "--output", "json"], skills);
 }
 
 function configureSkillGet(runner: FakeMulticaRunner, skillId: string, detail: SkillDetail): void {
-  runner.jsonResponses.set(`multica skill get ${skillId} --output json`, detail);
+  setJsonResponse(runner, ["skill", "get", skillId, "--output", "json"], detail);
 }
 
 afterEach(() => {
@@ -188,16 +216,22 @@ describe("runPublish", () => {
     const root = await skillFixture();
     const runner = new FakeMulticaRunner();
     configureSkillList(runner, [{ id: "other-id", name: "other-skill" }]);
-    runner.jsonResponses.set("multica skill create --name agent-switchyard --content # Skill\n --output json", {
-      id: "created-id",
-      name: "agent-switchyard"
-    });
-    runner.jsonResponses.set(
-      "multica skill files upsert created-id --path references/guide.md --content guide\n --output json",
+    setJsonResponse(
+      runner,
+      ["skill", "create", "--name", "agent-switchyard", "--content", "# Skill\n", "--output", "json"],
+      {
+        id: "created-id",
+        name: "agent-switchyard"
+      }
+    );
+    setJsonResponse(
+      runner,
+      ["skill", "files", "upsert", "created-id", "--path", "references/guide.md", "--content", "guide\n", "--output", "json"],
       { ok: true }
     );
-    runner.jsonResponses.set(
-      "multica skill files upsert created-id --path scripts/install.sh --content #!/bin/sh\n --output json",
+    setJsonResponse(
+      runner,
+      ["skill", "files", "upsert", "created-id", "--path", "scripts/install.sh", "--content", "#!/bin/sh\n", "--output", "json"],
       { ok: true }
     );
     const { lines } = captureLogs();
@@ -206,11 +240,112 @@ describe("runPublish", () => {
 
     const payload = parseOnlyJsonLine(lines);
     expect(payload).toMatchObject({ dryRun: false, action: "create", skillId: "created-id" });
-    expect(runner.calls).toContain("multica skill create --name agent-switchyard --content # Skill\n --output json");
-    expect(runner.calls.some((call) => call.includes("delete"))).toBe(false);
-    expect(runner.calls.some((call) => call.includes("prune"))).toBe(false);
-    expect(runner.calls.filter((call) => call.includes("skill files upsert created-id"))).toHaveLength(3);
-    expect(runner.calls.some((call) => call.includes("--path SKILL.md"))).toBe(false);
+    expect(runner.calls).toContainEqual(["skill", "create", "--name", "agent-switchyard", "--content", "# Skill\n", "--output", "json"]);
+    expect(runner.calls.some((args) => args.some((arg) => arg.includes("delete")))).toBe(false);
+    expect(runner.calls.some((args) => args.some((arg) => arg.includes("prune")))).toBe(false);
+    expect(countCallsStartingWith(runner.calls, ["skill", "files", "upsert", "created-id"])).toBe(3);
+    expect(runner.calls.some((args) => args.includes("--path") && args[args.indexOf("--path") + 1] === "SKILL.md")).toBe(false);
+  });
+
+  it("preserves argv boundaries for content and paths containing spaces, dashes, and newlines", async () => {
+    const root = await argvFixture();
+    const runner = new FakeMulticaRunner();
+    configureSkillList(runner, []);
+    setJsonResponse(
+      runner,
+      [
+        "skill",
+        "create",
+        "--name",
+        "agent-switchyard",
+        "--content",
+        "# Skill\nSecond line --not-a-flag\n",
+        "--output",
+        "json"
+      ],
+      { id: "created-id", name: "agent-switchyard" }
+    );
+    setJsonResponse(
+      runner,
+      [
+        "skill",
+        "files",
+        "upsert",
+        "created-id",
+        "--path",
+        "references/guide with spaces-and-dashes.md",
+        "--content",
+        "guide\n--literal value\n",
+        "--output",
+        "json"
+      ],
+      { ok: true }
+    );
+    setJsonResponse(
+      runner,
+      [
+        "skill",
+        "files",
+        "upsert",
+        "created-id",
+        "--path",
+        "scripts/install tricky-name.sh",
+        "--content",
+        "#!/bin/sh\necho \"hello --there\"\n",
+        "--output",
+        "json"
+      ],
+      { ok: true }
+    );
+    const { lines } = captureLogs();
+
+    await runPublish(runner, { source: root, skillName: "agent-switchyard", json: true });
+
+    parseOnlyJsonLine(lines);
+    expect(runner.calls).toContainEqual([
+      "skill",
+      "create",
+      "--name",
+      "agent-switchyard",
+      "--content",
+      "# Skill\nSecond line --not-a-flag\n",
+      "--output",
+      "json"
+    ]);
+    expect(runner.calls.some((args) => args.includes("--not-a-flag"))).toBe(false);
+    expect(runner.calls).toContainEqual([
+      "skill",
+      "files",
+      "upsert",
+      "created-id",
+      "--path",
+      "references/guide with spaces-and-dashes.md",
+      "--content",
+      "guide\n--literal value\n",
+      "--output",
+      "json"
+    ]);
+  });
+
+  it("throws a clear UserError when skill create returns no usable id", async () => {
+    const root = await skillFixture();
+    const runner = new FakeMulticaRunner();
+    configureSkillList(runner, []);
+    setJsonResponse(
+      runner,
+      ["skill", "create", "--name", "agent-switchyard", "--content", "# Skill\n", "--output", "json"],
+      { name: "agent-switchyard" }
+    );
+
+    try {
+      await runPublish(runner, { source: root, skillName: "agent-switchyard", json: true });
+      throw new Error("Expected runPublish to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(UserError);
+      expect((error as Error).message).toContain("multica skill create");
+      expect((error as Error).message).toContain("agent-switchyard");
+    }
+    expect(countCallsStartingWith(runner.calls, ["skill", "files", "upsert"])).toBe(0);
   });
 
   it("prints the human preflight plan before non-dry-run writes", async () => {
@@ -218,7 +353,7 @@ describe("runPublish", () => {
     const events: string[] = [];
     const runner = new FakeMulticaRunner();
     configureSkillList(runner, []);
-    runner.jsonResponses.set("multica skill create --name agent-switchyard --content # Skill\n --output json", () => {
+    setJsonResponse(runner, ["skill", "create", "--name", "agent-switchyard", "--content", "# Skill\n", "--output", "json"], () => {
       events.push("write:skill-create");
       expect(events.some((event) => event.startsWith("output:"))).toBe(true);
       return {
@@ -226,12 +361,14 @@ describe("runPublish", () => {
         name: "agent-switchyard"
       };
     });
-    runner.jsonResponses.set(
-      "multica skill files upsert created-id --path references/guide.md --content guide\n --output json",
+    setJsonResponse(
+      runner,
+      ["skill", "files", "upsert", "created-id", "--path", "references/guide.md", "--content", "guide\n", "--output", "json"],
       { ok: true }
     );
-    runner.jsonResponses.set(
-      "multica skill files upsert created-id --path scripts/install.sh --content #!/bin/sh\n --output json",
+    setJsonResponse(
+      runner,
+      ["skill", "files", "upsert", "created-id", "--path", "scripts/install.sh", "--content", "#!/bin/sh\n", "--output", "json"],
       { ok: true }
     );
 
@@ -256,16 +393,19 @@ describe("runPublish", () => {
       { id: "almost-id", name: "agent-switchyard-old" },
       { id: "existing-id", name: "agent-switchyard" }
     ]);
-    runner.jsonResponses.set(
-      "multica skill update existing-id --name agent-switchyard --content # Skill\n --output json",
+    setJsonResponse(
+      runner,
+      ["skill", "update", "existing-id", "--name", "agent-switchyard", "--content", "# Skill\n", "--output", "json"],
       { id: "existing-id", name: "agent-switchyard" }
     );
-    runner.jsonResponses.set(
-      "multica skill files upsert existing-id --path references/guide.md --content guide\n --output json",
+    setJsonResponse(
+      runner,
+      ["skill", "files", "upsert", "existing-id", "--path", "references/guide.md", "--content", "guide\n", "--output", "json"],
       { ok: true }
     );
-    runner.jsonResponses.set(
-      "multica skill files upsert existing-id --path scripts/install.sh --content #!/bin/sh\n --output json",
+    setJsonResponse(
+      runner,
+      ["skill", "files", "upsert", "existing-id", "--path", "scripts/install.sh", "--content", "#!/bin/sh\n", "--output", "json"],
       { ok: true }
     );
     const { lines } = captureLogs();
@@ -274,11 +414,19 @@ describe("runPublish", () => {
 
     const payload = parseOnlyJsonLine(lines);
     expect(payload).toMatchObject({ action: "update", skillId: "existing-id" });
-    expect(runner.calls).toContain(
-      "multica skill update existing-id --name agent-switchyard --content # Skill\n --output json"
-    );
-    expect(runner.calls.some((call) => call.includes("skill create") && !call.endsWith(" --help"))).toBe(false);
-    expect(runner.calls.filter((call) => call.includes("skill files upsert existing-id"))).toHaveLength(3);
+    expect(runner.calls).toContainEqual([
+      "skill",
+      "update",
+      "existing-id",
+      "--name",
+      "agent-switchyard",
+      "--content",
+      "# Skill\n",
+      "--output",
+      "json"
+    ]);
+    expect(runner.calls.some((args) => startsWithArgs(args, ["skill", "create"]) && !isHelpArgs(args))).toBe(false);
+    expect(countCallsStartingWith(runner.calls, ["skill", "files", "upsert", "existing-id"])).toBe(3);
   });
 
   it("fails before writes when a required publish capability is missing", async () => {
@@ -319,6 +467,42 @@ describe("runVerify", () => {
       degraded: false,
       diffCount: 0,
       diffs: []
+    });
+    expectNoWrites(runner.calls);
+  });
+
+  it("fails clearly when skill get files is not an array", async () => {
+    const root = await skillFixture();
+    const runner = new FakeMulticaRunner();
+    configureSkillList(runner, [{ id: "skill-id", name: "agent-switchyard" }]);
+    configureSkillGet(runner, "skill-id", {
+      id: "skill-id",
+      name: "agent-switchyard",
+      content: "# Skill\n",
+      files: { path: "references/guide.md", content: "guide\n" }
+    });
+
+    await expect(runVerify(runner, { source: root, skillName: "agent-switchyard", json: true })).rejects.toMatchObject({
+      name: "UserError",
+      message: expect.stringContaining("Expected multica skill get files to be an array")
+    });
+    expectNoWrites(runner.calls);
+  });
+
+  it("fails clearly for malformed skill get file entries", async () => {
+    const root = await skillFixture();
+    const runner = new FakeMulticaRunner();
+    configureSkillList(runner, [{ id: "skill-id", name: "agent-switchyard" }]);
+    configureSkillGet(runner, "skill-id", {
+      id: "skill-id",
+      name: "agent-switchyard",
+      content: "# Skill\n",
+      files: [null, { content: "orphan\n" }, "unexpected"]
+    });
+
+    await expect(runVerify(runner, { source: root, skillName: "agent-switchyard", json: true })).rejects.toMatchObject({
+      name: "UserError",
+      message: expect.stringContaining("Malformed multica skill get file entry")
     });
     expectNoWrites(runner.calls);
   });
@@ -449,7 +633,7 @@ describe("runVerify", () => {
         }
       ]
     });
-    runner.jsonResponses.set(`multica skill get skill-id --output json`, (args: string[]) => {
+    setJsonResponse(runner, ["skill", "get", "skill-id", "--output", "json"], (args: string[]) => {
       void args;
       return {
         id: "skill-id",
