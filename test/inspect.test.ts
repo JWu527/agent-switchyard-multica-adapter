@@ -224,6 +224,50 @@ describe("runInspect", () => {
     expectOnlyReadCommands(runner.calls);
   });
 
+  it("recognizes target skill from array-valued binding fields", async () => {
+    const runner = new FakeInspectRunner();
+    runner.runResponses.set("multica config show", ok('{"workspace":"demo-workspace"}'));
+    runner.jsonResponses.set("multica skill list --output json", [{ name: "agent-switchyard" }]);
+    runner.jsonResponses.set("multica agent list --output json", [{ name: "dev-agent" }]);
+    runner.jsonResponses.set("multica agent skills list --output json", [
+      { agent: "dev-agent", skills: ["agent-switchyard"] }
+    ]);
+    runner.jsonResponses.set("multica runtime list --output json", []);
+    const { lines } = captureLogs();
+
+    await runInspect(runner, { json: true, skillName: "agent-switchyard" });
+
+    const payload = JSON.parse(lines[0]);
+    expect(payload.degraded).toBe(false);
+    expect(payload.missingInformation).not.toContain("target skill binding status unavailable");
+    expect(payload.missingInformation).not.toContain(
+      "target skill is not bound to any discovered agent"
+    );
+    expectOnlyReadCommands(runner.calls);
+  });
+
+  it("recognizes target skill from nested binding arrays", async () => {
+    const runner = new FakeInspectRunner();
+    runner.runResponses.set("multica config show", ok('{"workspace":"demo-workspace"}'));
+    runner.jsonResponses.set("multica skill list --output json", [{ name: "agent-switchyard" }]);
+    runner.jsonResponses.set("multica agent list --output json", [{ name: "dev-agent" }]);
+    runner.jsonResponses.set("multica agent skills list --output json", [
+      { agent: "dev-agent", skillBindings: [{ skillName: "agent-switchyard" }] }
+    ]);
+    runner.jsonResponses.set("multica runtime list --output json", []);
+    const { lines } = captureLogs();
+
+    await runInspect(runner, { json: true, skillName: "agent-switchyard" });
+
+    const payload = JSON.parse(lines[0]);
+    expect(payload.degraded).toBe(false);
+    expect(payload.missingInformation).not.toContain("target skill binding status unavailable");
+    expect(payload.missingInformation).not.toContain(
+      "target skill is not bound to any discovered agent"
+    );
+    expectOnlyReadCommands(runner.calls);
+  });
+
   it("does not degrade inspect when only write capabilities are missing", async () => {
     const runner = new FakeInspectRunner(
       HELP_COMMANDS.filter(

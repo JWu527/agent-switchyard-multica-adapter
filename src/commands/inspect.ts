@@ -201,6 +201,7 @@ function itemName(item: unknown): string | undefined {
 
 function itemContainsSkill(item: unknown, skillName: string): boolean {
   if (typeof item === "string") return item === skillName;
+  if (Array.isArray(item)) return item.some((entry) => itemContainsSkill(entry, skillName));
   if (item === null || typeof item !== "object") return false;
 
   const record = item as Record<string, unknown>;
