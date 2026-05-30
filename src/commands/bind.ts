@@ -98,11 +98,37 @@ function formatSkillIds(ids: readonly string[]): string {
   return ids.length === 0 ? "(none)" : ids.join(", ");
 }
 
-function assertExactReadBack(agent: AgentLike, expected: readonly string[], actual: readonly string[]): void {
-  const matches = expected.length === actual.length && expected.every((id, index) => actual[index] === id);
-  if (!matches) {
+function diffSkillIdMultiset(expected: readonly string[], actual: readonly string[]): { missing: string[]; extra: string[] } {
+  const counts = new Map<string, number>();
+  for (const id of expected) counts.set(id, (counts.get(id) ?? 0) + 1);
+
+  const extra: string[] = [];
+  for (const id of actual) {
+    const count = counts.get(id) ?? 0;
+    if (count === 0) {
+      extra.push(id);
+      continue;
+    }
+    if (count === 1) {
+      counts.delete(id);
+    } else {
+      counts.set(id, count - 1);
+    }
+  }
+
+  const missing = [...counts.entries()].flatMap(([id, count]) => Array.from({ length: count }, () => id));
+  return { missing: missing.sort(), extra: extra.sort() };
+}
+
+function assertMatchingReadBack(agent: AgentLike, expected: readonly string[], actual: readonly string[]): void {
+  const diff = diffSkillIdMultiset(expected, actual);
+  if (diff.missing.length > 0 || diff.extra.length > 0) {
     throw new UserError(
-      `Read-back verification failed for agent ${agent.name}: expected ${formatSkillIds(expected)}, got ${formatSkillIds(actual)}`
+      [
+        `Read-back verification failed for agent ${agent.name}: expected ${formatSkillIds(expected)}, got ${formatSkillIds(actual)}`,
+        `missing: ${formatSkillIds(diff.missing)}`,
+        `extra: ${formatSkillIds(diff.extra)}`
+      ].join("; ")
     );
   }
 }
@@ -144,37 +170,37 @@ export async function runBind(runner: MulticaRunner, options: BindOptions): Prom
     await runner.json<unknown>(["agent", "list", "--output", "json"], "agent list"),
     "agent list"
   );
+  const targetAgents = agentSelectors.map((selector) => resolveAgent(agentList, selector));
   const changes: BindChange[] = [];
 
-  for (const selector of agentSelectors) {
-    const agent = resolveAgent(agentList, selector);
+  for (const agent of targetAgents) {
     const beforeSkills = normalizeAgentSkills(
       await runner.json<unknown>(["agent", "skills", "list", agent.id, "--output", "json"], "agent skills list"),
       agent
     );
     const beforeSkillIds = skillIds(beforeSkills);
     const afterSkillIds = mergeSkillIds(beforeSkillIds, skill.id);
-    const change: BindChange = {
+    changes.push({
       agent,
       beforeSkills,
       beforeSkillIds,
       afterSkillIds,
       alreadyBound: beforeSkillIds.includes(skill.id),
       setArgs: setArgs(agent.id, afterSkillIds)
-    };
+    });
+  }
 
+  for (const change of changes) {
     if (!options.dryRun) {
       await runner.json<unknown>(change.setArgs, "agent skills set");
       const readBackSkills = normalizeAgentSkills(
-        await runner.json<unknown>(["agent", "skills", "list", agent.id, "--output", "json"], "agent skills list"),
-        agent
+        await runner.json<unknown>(["agent", "skills", "list", change.agent.id, "--output", "json"], "agent skills list"),
+        change.agent
       );
       const readBackSkillIds = skillIds(readBackSkills);
-      assertExactReadBack(agent, afterSkillIds, readBackSkillIds);
+      assertMatchingReadBack(change.agent, change.afterSkillIds, readBackSkillIds);
       change.readBackSkillIds = readBackSkillIds;
     }
-
-    changes.push(change);
   }
 
   outputPayload(

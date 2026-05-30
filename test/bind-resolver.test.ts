@@ -157,6 +157,12 @@ describe("resolveAgent", () => {
     });
   });
 
+  it("resolves UUIDv7 selectors by id", () => {
+    const uuidV7Agent = { id: "018f6a2b-3c4d-7e5f-8123-456789abcdef", name: "Future" };
+
+    expect(resolveAgent([...AGENTS, uuidV7Agent], uuidV7Agent.id)).toEqual(uuidV7Agent);
+  });
+
   it("resolves non-UUID selectors by exact name", () => {
     expect(resolveAgent(AGENTS, "Codex")).toMatchObject({
       id: "22222222-2222-4222-8222-222222222222",
@@ -327,6 +333,52 @@ describe("runBind", () => {
     ]);
   });
 
+  it("does not write any agents when a later selector is invalid", async () => {
+    const runner = new FakeMulticaRunner();
+    configureSkillList(runner, SKILLS);
+    configureAgentList(runner, AGENTS);
+    configureAgentSkills(runner, AGENTS[0].id, [
+      [{ id: "existing-a", name: "Existing A" }],
+      [
+        { id: "existing-a", name: "Existing A" },
+        { id: "skill-target", name: "agent-switchyard" }
+      ]
+    ]);
+    configureAgentSkillsSet(runner, AGENTS[0].id, ["existing-a", "skill-target"]);
+
+    await expect(
+      runBind(runner, { skillName: "agent-switchyard", agent: ["Hermes", "Missing"], json: true })
+    ).rejects.toThrow('Agent not found by exact name: "Missing"');
+
+    expect(countCallsStartingWith(runner.calls, ["agent", "skills", "set"])).toBe(0);
+  });
+
+  it("accepts reordered read-back skill ids when the set of ids matches", async () => {
+    const runner = new FakeMulticaRunner();
+    configureSkillList(runner, SKILLS);
+    configureAgentList(runner, AGENTS);
+    configureAgentSkills(runner, AGENTS[0].id, [
+      [{ id: "existing-a", name: "Existing A" }, { id: "existing-b", name: "Existing B" }],
+      [
+        { id: "skill-target", name: "agent-switchyard" },
+        { id: "existing-b", name: "Existing B" },
+        { id: "existing-a", name: "Existing A" }
+      ]
+    ]);
+    configureAgentSkillsSet(runner, AGENTS[0].id, ["existing-a", "existing-b", "skill-target"]);
+    const { lines } = captureLogs();
+
+    await runBind(runner, { skillName: "agent-switchyard", agent: ["Hermes"], json: true });
+
+    const payload = parseOnlyJsonLine(lines);
+    expect(payload.changes).toEqual([
+      expect.objectContaining({
+        afterSkillIds: ["existing-a", "existing-b", "skill-target"],
+        readBackSkillIds: ["skill-target", "existing-b", "existing-a"]
+      })
+    ]);
+  });
+
   it("does not duplicate an already-bound skill or delete existing skills", async () => {
     const runner = new FakeMulticaRunner();
     configureSkillList(runner, SKILLS);
@@ -374,7 +426,10 @@ describe("runBind", () => {
     configureAgentList(runner, AGENTS);
     configureAgentSkills(runner, AGENTS[0].id, [
       [{ id: "existing-a", name: "Existing A" }],
-      [{ id: "skill-target", name: "agent-switchyard" }]
+      [
+        { id: "skill-target", name: "agent-switchyard" },
+        { id: "unexpected-z", name: "Unexpected Z" }
+      ]
     ]);
     configureAgentSkillsSet(runner, AGENTS[0].id, ["existing-a", "skill-target"]);
 
@@ -382,7 +437,7 @@ describe("runBind", () => {
       runBind(runner, { skillName: "agent-switchyard", agent: ["Hermes"], json: true })
     ).rejects.toMatchObject({
       name: "UserError",
-      message: expect.stringContaining("Read-back verification failed for agent Hermes")
+      message: expect.stringMatching(/Read-back verification failed for agent Hermes.*missing: existing-a.*extra: unexpected-z/s)
     });
   });
 
