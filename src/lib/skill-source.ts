@@ -8,8 +8,8 @@ const MAX_FILE_SIZE = 1024 * 1024;
 const MAX_TOTAL_SIZE = 8 * 1024 * 1024;
 const MAX_FILE_COUNT = 128;
 const ALLOWED_TOP_LEVEL_PATHS = new Set(["references", "scripts"]);
-const BLOCKED_NAMES = new Set([
-  ".DS_Store",
+const BLOCKED_EXACT_NAMES = new Set([
+  ".ds_store",
   ".env",
   "id_rsa",
   "id_ed25519",
@@ -17,6 +17,7 @@ const BLOCKED_NAMES = new Set([
   "token",
   "secret"
 ]);
+const BLOCKED_DOTFILES = new Set([".npmrc", ".netrc", ".pypirc"]);
 
 export interface SkillSourceFile extends ManifestFile {
   content: string;
@@ -45,18 +46,27 @@ function validateSourceDirInput(sourceDir: string): void {
 
 function isAllowedPath(rel: string): boolean {
   if (rel === "SKILL.md") return true;
+  return rel.startsWith("references/") || rel.startsWith("scripts/");
+}
+
+function isPublishableDirectory(rel: string): boolean {
   const [topLevel] = rel.split("/");
   return ALLOWED_TOP_LEVEL_PATHS.has(topLevel ?? "");
 }
 
 function isBlockedPath(rel: string): boolean {
-  const parts = rel.split("/");
+  const normalizedRel = rel.toLowerCase();
+  const parts = normalizedRel.split("/");
   const baseName = parts.at(-1) ?? "";
 
   if (parts.includes(".git") || parts.includes("node_modules")) return true;
-  if (parts.some((part) => BLOCKED_NAMES.has(part))) return true;
+  if (BLOCKED_EXACT_NAMES.has(baseName) || BLOCKED_DOTFILES.has(baseName)) return true;
+  if (baseName.startsWith(".env.")) return true;
   if (baseName.endsWith(".tmp") || baseName.endsWith(".bak") || baseName.endsWith("~")) return true;
   if (baseName.endsWith(".pem") || baseName.endsWith(".key")) return true;
+  if (parts.some((part) => part.includes("credential") || part.includes("token") || part.includes("secret"))) {
+    return true;
+  }
 
   return false;
 }
@@ -70,15 +80,17 @@ async function walkSource(root: string, directory: string, out: SkillSourceFile[
 
     if (isBlockedPath(rel)) continue;
 
-    const info = await lstat(absolutePath);
-    if (info.isSymbolicLink()) continue;
-
-    if (info.isDirectory()) {
-      await walkSource(root, absolutePath, out);
+    if (entry.isDirectory()) {
+      if (isPublishableDirectory(rel)) {
+        await walkSource(root, absolutePath, out);
+      }
       continue;
     }
 
-    if (!info.isFile() || !isAllowedPath(rel)) continue;
+    if (!isAllowedPath(rel)) continue;
+
+    const info = await lstat(absolutePath);
+    if (info.isSymbolicLink() || !info.isFile()) continue;
     if (info.size > MAX_FILE_SIZE) {
       throw new UserError(`File exceeds 1 MiB limit: ${rel}`);
     }

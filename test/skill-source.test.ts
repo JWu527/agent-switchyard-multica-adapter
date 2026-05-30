@@ -1,5 +1,5 @@
 import { mkdtempSync } from "node:fs";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -94,6 +94,46 @@ describe("collectSkillSource", () => {
     await expect(collectSkillSource(traversalRoot, "agent-switchyard")).rejects.toThrow(
       "Refusing source path containing traversal"
     );
+  });
+
+  it("does not descend into unpublishable top-level directories", async () => {
+    const root = await fixtureRoot();
+    const privateDir = join(root, "dist", ".venv", "private");
+    await mkdir(privateDir, { recursive: true });
+    await writeFile(join(privateDir, "secret.md"), "secret");
+    await chmod(privateDir, 0o000);
+
+    try {
+      const result = await collectSkillSource(root, "agent-switchyard");
+
+      expect(result.files.map((file) => file.path)).not.toContain("dist/.venv/private/secret.md");
+    } finally {
+      await chmod(privateDir, 0o700).catch(() => undefined);
+    }
+  });
+
+  it("excludes sensitive filenames case-insensitively under allowed roots", async () => {
+    const root = await fixtureRoot();
+    await writeFile(join(root, "references", ".env.local"), "secret");
+    await writeFile(join(root, "scripts", "TOKEN"), "secret");
+    await writeFile(join(root, "references", "secret.PEM"), "secret");
+    await writeFile(join(root, "references", "aws_credentials.json"), "secret");
+    await writeFile(join(root, "references", ".npmrc"), "secret");
+    await writeFile(join(root, "references", "safe.md"), "safe\n");
+
+    const result = await collectSkillSource(root, "agent-switchyard");
+    const paths = result.files.map((file) => file.path);
+
+    expect(paths).toContain("references/safe.md");
+    for (const sensitivePath of [
+      "references/.env.local",
+      "scripts/TOKEN",
+      "references/secret.PEM",
+      "references/aws_credentials.json",
+      "references/.npmrc"
+    ]) {
+      expect(paths).not.toContain(sensitivePath);
+    }
   });
 
   it("enforces file count, single file size, and total size limits", async () => {
