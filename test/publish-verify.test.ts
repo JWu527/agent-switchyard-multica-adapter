@@ -37,6 +37,11 @@ interface SkillDetail extends SkillSummary {
   files?: unknown;
 }
 
+interface AgentSummary {
+  id: string;
+  name: string;
+}
+
 function commandString(args: string[]): string {
   return ["multica", ...args].join(" ");
 }
@@ -169,6 +174,14 @@ function configureSkillList(runner: FakeMulticaRunner, skills: unknown[]): void 
 
 function configureSkillGet(runner: FakeMulticaRunner, skillId: string, detail: SkillDetail): void {
   setJsonResponse(runner, ["skill", "get", skillId, "--output", "json"], detail);
+}
+
+function configureAgentList(runner: FakeMulticaRunner, agents: unknown[]): void {
+  setJsonResponse(runner, ["agent", "list", "--output", "json"], agents);
+}
+
+function configureAgentSkills(runner: FakeMulticaRunner, agentId: string, skills: unknown[]): void {
+  setJsonResponse(runner, ["agent", "skills", "list", agentId, "--output", "json"], skills);
 }
 
 afterEach(() => {
@@ -702,14 +715,157 @@ describe("runVerify", () => {
     expectNoWrites(runner.calls);
   });
 
-  it("fails clearly for --agent until binding verification is implemented by the bind/resolver task", async () => {
+  it("verifies one or more bound agents without writes", async () => {
     const root = await skillFixture();
     const runner = new FakeMulticaRunner();
+    const agents: AgentSummary[] = [
+      { id: "agent-1", name: "dev-agent" },
+      { id: "018fe3d2-3d3e-8999-9cbd-9f2d11c0f001", name: "ops-agent" }
+    ];
+    configureSkillList(runner, [{ id: "skill-id", name: "agent-switchyard" }]);
+    configureSkillGet(runner, "skill-id", {
+      id: "skill-id",
+      name: "agent-switchyard",
+      content: "# Skill\n",
+      files: [
+        { path: "references/guide.md", content: "guide\n" },
+        { path: "scripts/install.sh", content: "#!/bin/sh\n" }
+      ]
+    });
+    configureAgentList(runner, agents);
+    configureAgentSkills(runner, "agent-1", [{ id: "skill-id", name: "agent-switchyard" }]);
+    configureAgentSkills(runner, "018fe3d2-3d3e-8999-9cbd-9f2d11c0f001", ["skill-id"]);
+    const { lines } = captureLogs();
 
     await expect(
-      runVerify(runner, { source: root, skillName: "agent-switchyard", agent: "dev-agent" })
-    ).rejects.toThrow("Agent binding verification is implemented by the bind/resolver task");
+      runVerify(runner, {
+        source: root,
+        skillName: "agent-switchyard",
+        agent: ["dev-agent", "018fe3d2-3d3e-8999-9cbd-9f2d11c0f001"],
+        json: true
+      })
+    ).resolves.toBeUndefined();
 
-    expect(runner.calls).toEqual([]);
+    const payload = parseOnlyJsonLine(lines);
+    expect(payload).toMatchObject({
+      ok: true,
+      diffCount: 0,
+      agentChecks: [
+        { agent: agents[0], bound: true, skillIds: ["skill-id"] },
+        { agent: agents[1], bound: true, skillIds: ["skill-id"] }
+      ]
+    });
+    expect(runner.calls).toContainEqual(["agent", "list", "--output", "json"]);
+    expect(runner.calls).toContainEqual(["agent", "skills", "list", "agent-1", "--output", "json"]);
+    expectNoWrites(runner.calls);
+  });
+
+  it("reports agent_not_bound differences and exits nonzero after printing", async () => {
+    const root = await skillFixture();
+    const runner = new FakeMulticaRunner();
+    const agent = { id: "agent-1", name: "dev-agent" };
+    configureSkillList(runner, [{ id: "skill-id", name: "agent-switchyard" }]);
+    configureSkillGet(runner, "skill-id", {
+      id: "skill-id",
+      name: "agent-switchyard",
+      content: "# Skill\n",
+      files: [
+        { path: "references/guide.md", content: "guide\n" },
+        { path: "scripts/install.sh", content: "#!/bin/sh\n" }
+      ]
+    });
+    configureAgentList(runner, [agent]);
+    configureAgentSkills(runner, "agent-1", [{ id: "other-skill", name: "other" }]);
+    const { lines } = captureLogs();
+
+    await expect(
+      runVerify(runner, { source: root, skillName: "agent-switchyard", agent: "dev-agent", json: true })
+    ).rejects.toThrow("Verification failed");
+
+    const payload = parseOnlyJsonLine(lines);
+    expect(payload).toMatchObject({
+      ok: false,
+      diffCount: 1,
+      agentChecks: [{ agent, bound: false, skillIds: ["other-skill"] }]
+    });
+    expect(payload.diffs).toEqual([
+      expect.objectContaining({
+        kind: "agent_not_bound",
+        path: "agent:agent-1",
+        agent,
+        skillId: "skill-id",
+        skillName: "agent-switchyard"
+      })
+    ]);
+    expectNoWrites(runner.calls);
+  });
+
+  it("fails clearly for --agent when the agent cannot be resolved", async () => {
+    const root = await skillFixture();
+    const runner = new FakeMulticaRunner();
+    configureSkillList(runner, [{ id: "skill-id", name: "agent-switchyard" }]);
+    configureSkillGet(runner, "skill-id", {
+      id: "skill-id",
+      name: "agent-switchyard",
+      content: "# Skill\n",
+      files: [
+        { path: "references/guide.md", content: "guide\n" },
+        { path: "scripts/install.sh", content: "#!/bin/sh\n" }
+      ]
+    });
+    configureAgentList(runner, []);
+
+    await expect(
+      runVerify(runner, { source: root, skillName: "agent-switchyard", agent: "missing-agent", json: true })
+    ).rejects.toThrow('Agent not found by exact name: "missing-agent"');
+
+    expect(countCallsStartingWith(runner.calls, ["agent", "skills", "list"])).toBe(0);
+    expectNoWrites(runner.calls);
+  });
+
+  it("does not require agent capabilities unless --agent is requested", async () => {
+    const root = await skillFixture();
+    const runner = new FakeMulticaRunner(
+      HELP_COMMANDS.filter((command) => !command.startsWith("multica agent"))
+    );
+    configureSkillList(runner, [{ id: "skill-id", name: "agent-switchyard" }]);
+    configureSkillGet(runner, "skill-id", {
+      id: "skill-id",
+      name: "agent-switchyard",
+      content: "# Skill\n",
+      files: [
+        { path: "references/guide.md", content: "guide\n" },
+        { path: "scripts/install.sh", content: "#!/bin/sh\n" }
+      ]
+    });
+    const { lines } = captureLogs();
+
+    await expect(
+      runVerify(runner, { source: root, skillName: "agent-switchyard", json: true })
+    ).resolves.toBeUndefined();
+
+    expect(parseOnlyJsonLine(lines)).toMatchObject({ ok: true, agentChecks: [] });
+    expect(runner.calls).not.toContainEqual(["agent", "list", "--help"]);
+    expect(runner.calls).not.toContainEqual(["agent", "skills", "list", "--help"]);
+    expect(countCallsStartingWith(runner.calls, ["agent", "list"])).toBe(0);
+    expect(countCallsStartingWith(runner.calls, ["agent", "skills", "list"])).toBe(0);
+    expectNoWrites(runner.calls);
+  });
+
+  it("requires agent read capabilities when --agent is requested and fails before reads", async () => {
+    const root = await skillFixture();
+    const runner = new FakeMulticaRunner(
+      HELP_COMMANDS.filter((command) => command !== "multica agent skills list --help")
+    );
+
+    await expect(
+      runVerify(runner, { source: root, skillName: "agent-switchyard", agent: "dev-agent", json: true })
+    ).rejects.toThrow("multica agent skills list --help");
+
+    expect(runner.calls).toContainEqual(["agent", "list", "--help"]);
+    expect(runner.calls).toContainEqual(["agent", "skills", "list", "--help"]);
+    expect(countCallsStartingWith(runner.calls, ["skill", "list"])).toBe(0);
+    expect(countCallsStartingWith(runner.calls, ["agent", "list"])).toBe(0);
+    expectNoWrites(runner.calls);
   });
 });

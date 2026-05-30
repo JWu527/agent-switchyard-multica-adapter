@@ -1,4 +1,4 @@
-export type DiffKind = "missing_remote" | "extra_remote" | "content_mismatch";
+export type DiffKind = "missing_remote" | "extra_remote" | "content_mismatch" | "agent_not_bound";
 
 export interface FileRecord {
   path: string;
@@ -11,6 +11,12 @@ export interface DiffRecord {
   path: string;
   local?: FileRecord;
   remote?: FileRecord;
+  agent?: {
+    id: string;
+    name: string;
+  };
+  skillId?: string;
+  skillName?: string;
 }
 
 export function diffFileRecords(local: FileRecord[], remote: FileRecord[]): DiffRecord[] {

@@ -64,7 +64,10 @@ program
   .description("Verify Multica skill content against local source")
   .option("--source <dir>", "Agent Switchyard skill source directory")
   .option("--skill-name <name>", "Skill name")
-  .option("--agent <name-or-id>", "Agent binding check (implemented by the bind/resolver task)")
+  .option("--agent <name-or-id>", "Agent name or id to verify binding; repeatable", (value, previous: string[] = []) => [
+    ...previous,
+    value
+  ], [])
   .option("--json", "Output JSON")
   .action(async (options) => runVerify(runner, options));
 

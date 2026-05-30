@@ -1,4 +1,5 @@
-import { probeCapabilities, requireCapabilities } from "../lib/capability-probe.js";
+import { probeCapabilities, requireCapabilities, type CapabilityKey } from "../lib/capability-probe.js";
+import { resolveAgent, type AgentLike } from "../lib/bind-resolver.js";
 import { diffFileRecords, type DiffRecord, type FileRecord } from "../lib/diff.js";
 import { UserError } from "../lib/errors.js";
 import { sha256 } from "../lib/hash.js";
@@ -25,6 +26,17 @@ interface MulticaSkillDetail {
   files?: MulticaSkillFile[];
 }
 
+interface SkillBinding {
+  id: string;
+  name?: string;
+}
+
+interface AgentCheck {
+  agent: AgentLike;
+  bound: boolean;
+  skillIds: string[];
+}
+
 type VerificationLevel = "content" | "manifest-only" | "unavailable";
 const REMOTE_CONTENT_UNAVAILABLE_SHA = "<remote-content-unavailable>";
 const REMOTE_CONTENT_UNAVAILABLE_SIZE = -1;
@@ -37,19 +49,33 @@ interface VerifyPayload {
   verificationLevel: VerificationLevel;
   diffCount: number;
   diffs: DiffRecord[];
+  agentChecks: AgentCheck[];
   notes: string[];
 }
 
 export interface VerifyOptions {
   source?: string;
   skillName?: string;
-  agent?: string;
+  agent?: string[] | string;
   json?: boolean;
   output?: (text: string) => void;
 }
 
 function emit(options: VerifyOptions, text: string): void {
   (options.output ?? console.log)(text);
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function listFromJson(value: unknown, label: string): unknown[] {
+  if (!Array.isArray(value)) throw new UserError(`Expected array from multica ${label}`);
+  return value;
 }
 
 function resolveVerifyInput(options: VerifyOptions): { source: string; skillName: string } {
@@ -64,6 +90,15 @@ function resolveVerifyInput(options: VerifyOptions): { source: string; skillName
   }
 
   return { source, skillName };
+}
+
+function resolveAgentSelectors(options: VerifyOptions): string[] {
+  const rawSelectors = Array.isArray(options.agent)
+    ? options.agent
+    : options.agent === undefined
+      ? []
+      : [options.agent];
+  return rawSelectors.map((selector) => selector.trim()).filter((selector) => selector.length > 0);
 }
 
 function localRecords(manifest: SwitchyardMulticaManifest): FileRecord[] {
@@ -124,26 +159,48 @@ function normalizeRemoteFile(value: unknown, index: number): MulticaSkillFile {
 }
 
 function normalizeSkillDetail(value: unknown): MulticaSkillDetail {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (!isRecord(value)) {
     throw new UserError("Expected object from multica skill get");
   }
 
-  const record = value as Record<string, unknown>;
-  if (record.content !== undefined && typeof record.content !== "string") {
+  if (value.content !== undefined && typeof value.content !== "string") {
     throw new UserError("Expected multica skill get content to be a string when present");
   }
-  if (record.files !== undefined && !Array.isArray(record.files)) {
+  if (value.files !== undefined && !Array.isArray(value.files)) {
     throw new UserError("Expected multica skill get files to be an array when present");
   }
 
   return {
-    id: typeof record.id === "string" ? record.id : "",
-    name: typeof record.name === "string" ? record.name : "",
-    content: typeof record.content === "string" ? record.content : undefined,
-    files: Array.isArray(record.files)
-      ? record.files.map((file, index) => normalizeRemoteFile(file, index))
+    id: typeof value.id === "string" ? value.id : "",
+    name: typeof value.name === "string" ? value.name : "",
+    content: typeof value.content === "string" ? value.content : undefined,
+    files: Array.isArray(value.files)
+      ? value.files.map((file, index) => normalizeRemoteFile(file, index))
       : []
   };
+}
+
+function normalizeAgentSkillEntry(entry: unknown, agent: AgentLike, index: number): SkillBinding {
+  if (nonEmptyString(entry)) return { id: entry };
+  if (!isRecord(entry) || !nonEmptyString(entry.id)) {
+    throw new UserError(
+      `Malformed multica agent skills list entry for agent ${agent.name} at index ${index}: missing non-empty string id`
+    );
+  }
+
+  return {
+    id: entry.id,
+    name: nonEmptyString(entry.name) ? entry.name : undefined
+  };
+}
+
+function normalizeAgentSkills(value: unknown, agent: AgentLike): SkillBinding[] {
+  if (!Array.isArray(value)) throw new UserError(`Expected array from multica agent skills list for agent ${agent.name}`);
+  return value.map((entry, index) => normalizeAgentSkillEntry(entry, agent, index));
+}
+
+function skillIds(skills: readonly SkillBinding[]): string[] {
+  return skills.map((skill) => skill.id);
 }
 
 function recordFromContent(path: string, content: string): FileRecord {
@@ -262,6 +319,7 @@ function outputPayload(payload: VerifyPayload, options: VerifyOptions): void {
     `Verification level: ${payload.verificationLevel}${payload.degraded ? " (degraded)" : ""}`,
     `Differences: ${payload.diffCount}`,
     ...payload.notes.map((note) => `Note: ${note}`),
+    ...payload.agentChecks.map((check) => `Agent ${check.agent.name} (${check.agent.id}): ${check.bound ? "bound" : "not bound"}`),
     ...payload.diffs.map((diff) => `  - ${diff.kind}: ${diff.path}`)
   ];
   emit(options, lines.join("\n"));
@@ -277,16 +335,51 @@ function failureMessage(payload: VerifyPayload): string {
   return `Verification failed with ${payload.diffCount} difference(s)`;
 }
 
-export async function runVerify(runner: MulticaRunner, options: VerifyOptions): Promise<void> {
-  if (options.agent !== undefined && options.agent.trim().length > 0) {
-    throw new UserError(
-      "Agent binding verification is implemented by the bind/resolver task; omit --agent for content verification in Task 5."
+async function verifyAgentBindings(
+  runner: MulticaRunner,
+  agentSelectors: readonly string[],
+  skill: MulticaSkillSummary,
+  skillName: string
+): Promise<{ agentChecks: AgentCheck[]; diffs: DiffRecord[] }> {
+  if (agentSelectors.length === 0) return { agentChecks: [], diffs: [] };
+
+  const agentList = listFromJson(
+    await runner.json<unknown>(["agent", "list", "--output", "json"], "agent list"),
+    "agent list"
+  );
+  const targetAgents = agentSelectors.map((selector) => resolveAgent(agentList, selector));
+  const agentChecks: AgentCheck[] = [];
+  const diffs: DiffRecord[] = [];
+
+  for (const agent of targetAgents) {
+    const bindings = normalizeAgentSkills(
+      await runner.json<unknown>(["agent", "skills", "list", agent.id, "--output", "json"], "agent skills list"),
+      agent
     );
+    const ids = skillIds(bindings);
+    const bound = ids.includes(skill.id);
+    agentChecks.push({ agent, bound, skillIds: ids });
+    if (!bound) {
+      diffs.push({
+        kind: "agent_not_bound",
+        path: `agent:${agent.id}`,
+        agent,
+        skillId: skill.id,
+        skillName
+      });
+    }
   }
 
+  return { agentChecks, diffs };
+}
+
+export async function runVerify(runner: MulticaRunner, options: VerifyOptions): Promise<void> {
   const { source, skillName } = resolveVerifyInput(options);
-  const capabilities = await probeCapabilities(runner);
-  requireCapabilities(capabilities, ["skillList", "skillGet"]);
+  const agentSelectors = resolveAgentSelectors(options);
+  const requiredCapabilities: CapabilityKey[] = ["skillList", "skillGet"];
+  if (agentSelectors.length > 0) requiredCapabilities.push("agentList", "agentSkillsList");
+  const capabilities = await probeCapabilities(runner, requiredCapabilities);
+  requireCapabilities(capabilities, requiredCapabilities);
 
   const local = await collectSkillSource(source, skillName);
   const localFileRecords = localRecords(local.manifest);
@@ -326,7 +419,9 @@ export async function runVerify(runner: MulticaRunner, options: VerifyOptions): 
     notes.push("Remote file content is unavailable and no readable remote manifest was found.");
   }
 
-  const diffs = diffFileRecords(localFileRecords, remoteRecords);
+  const contentDiffs = diffFileRecords(localFileRecords, remoteRecords);
+  const agentResult = await verifyAgentBindings(runner, agentSelectors, skill, skillName);
+  const diffs = [...contentDiffs, ...agentResult.diffs];
   const payload: VerifyPayload = {
     ok: diffs.length === 0 && verificationLevel !== "unavailable",
     skillName,
@@ -335,6 +430,7 @@ export async function runVerify(runner: MulticaRunner, options: VerifyOptions): 
     verificationLevel,
     diffCount: diffs.length,
     diffs,
+    agentChecks: agentResult.agentChecks,
     notes
   };
 
