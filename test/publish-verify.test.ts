@@ -163,7 +163,7 @@ function expectNoWrites(calls: string[][]): void {
   expect(writes).toEqual([]);
 }
 
-function configureSkillList(runner: FakeMulticaRunner, skills: SkillSummary[]): void {
+function configureSkillList(runner: FakeMulticaRunner, skills: unknown[]): void {
   setJsonResponse(runner, ["skill", "list", "--output", "json"], skills);
 }
 
@@ -245,6 +245,19 @@ describe("runPublish", () => {
     expect(runner.calls.some((args) => args.some((arg) => arg.includes("prune")))).toBe(false);
     expect(countCallsStartingWith(runner.calls, ["skill", "files", "upsert", "created-id"])).toBe(3);
     expect(runner.calls.some((args) => args.includes("--path") && args[args.indexOf("--path") + 1] === "SKILL.md")).toBe(false);
+  });
+
+  it("fails instead of creating a duplicate when exact-name skill list entry has no id", async () => {
+    const root = await skillFixture();
+    const runner = new FakeMulticaRunner();
+    configureSkillList(runner, [{ name: "agent-switchyard" }]);
+
+    await expect(runPublish(runner, { source: root, skillName: "agent-switchyard", json: true })).rejects.toMatchObject({
+      name: "UserError",
+      message: expect.stringContaining("Malformed multica skill list entry for agent-switchyard")
+    });
+    expect(countCallsStartingWith(runner.calls, ["skill", "create"])).toBe(0);
+    expect(countCallsStartingWith(runner.calls, ["skill", "files", "upsert"])).toBe(0);
   });
 
   it("preserves argv boundaries for content and paths containing spaces, dashes, and newlines", async () => {
@@ -468,6 +481,19 @@ describe("runVerify", () => {
       diffCount: 0,
       diffs: []
     });
+    expectNoWrites(runner.calls);
+  });
+
+  it("fails clearly when exact-name skill list entry has no id during verify", async () => {
+    const root = await skillFixture();
+    const runner = new FakeMulticaRunner();
+    configureSkillList(runner, [{ name: "agent-switchyard" }]);
+
+    await expect(runVerify(runner, { source: root, skillName: "agent-switchyard", json: true })).rejects.toMatchObject({
+      name: "UserError",
+      message: expect.stringContaining("Malformed multica skill list entry for agent-switchyard")
+    });
+    expect(countCallsStartingWith(runner.calls, ["skill", "get"])).toBe(0);
     expectNoWrites(runner.calls);
   });
 

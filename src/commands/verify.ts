@@ -74,14 +74,20 @@ function localRecords(manifest: SwitchyardMulticaManifest): FileRecord[] {
   }));
 }
 
-function normalizeSkillList(value: unknown): MulticaSkillSummary[] {
+function malformedSkillListEntry(skillName: string): UserError {
+  return new UserError(`Malformed multica skill list entry for ${skillName}: missing non-empty string id`);
+}
+
+function normalizeSkillList(value: unknown, skillName: string): MulticaSkillSummary[] {
   if (!Array.isArray(value)) throw new UserError("Expected array from multica skill list");
   return value.flatMap((skill) => {
     if (skill === null || typeof skill !== "object") return [];
     const record = skill as Record<string, unknown>;
-    return typeof record.id === "string" && typeof record.name === "string"
-      ? [{ id: record.id, name: record.name }]
-      : [];
+    if (record.name === skillName && (typeof record.id !== "string" || record.id.trim().length === 0)) {
+      throw malformedSkillListEntry(skillName);
+    }
+    if (typeof record.id !== "string" || record.id.trim().length === 0 || typeof record.name !== "string") return [];
+    return [{ id: record.id, name: record.name }];
   });
 }
 
@@ -284,7 +290,10 @@ export async function runVerify(runner: MulticaRunner, options: VerifyOptions): 
 
   const local = await collectSkillSource(source, skillName);
   const localFileRecords = localRecords(local.manifest);
-  const skills = normalizeSkillList(await runner.json<unknown>(["skill", "list", "--output", "json"], "skill list"));
+  const skills = normalizeSkillList(
+    await runner.json<unknown>(["skill", "list", "--output", "json"], "skill list"),
+    skillName
+  );
   const skill = skills.find((candidate) => candidate.name === skillName);
   if (skill === undefined) throw new UserError(`Skill not found in Multica: ${skillName}. Run publish first.`);
 

@@ -126,15 +126,21 @@ function outputPlan(plan: PublishOutput, options: PublishOptions, title?: string
   emit(options, humanPlanText(plan, title ?? `Publish ${plan.dryRun ? "dry run" : "result"}`));
 }
 
-async function listSkills(runner: MulticaRunner): Promise<MulticaSkill[]> {
+function malformedSkillListEntry(skillName: string): UserError {
+  return new UserError(`Malformed multica skill list entry for ${skillName}: missing non-empty string id`);
+}
+
+async function listSkills(runner: MulticaRunner, skillName: string): Promise<MulticaSkill[]> {
   const skills = await runner.json<unknown>(["skill", "list", "--output", "json"], "skill list");
   if (!Array.isArray(skills)) throw new UserError("Expected array from multica skill list");
   return skills.flatMap((skill) => {
     if (skill === null || typeof skill !== "object") return [];
     const record = skill as Record<string, unknown>;
-    return typeof record.id === "string" && typeof record.name === "string"
-      ? [{ id: record.id, name: record.name }]
-      : [];
+    if (record.name === skillName && (typeof record.id !== "string" || record.id.trim().length === 0)) {
+      throw malformedSkillListEntry(skillName);
+    }
+    if (typeof record.id !== "string" || record.id.trim().length === 0 || typeof record.name !== "string") return [];
+    return [{ id: record.id, name: record.name }];
   });
 }
 
@@ -170,7 +176,7 @@ export async function runPublish(runner: MulticaRunner, options: PublishOptions)
   requireCapabilities(capabilities, ["skillList", "skillCreate", "skillUpdate", "skillFilesUpsert"]);
 
   const sourceBundle = await collectSkillSource(source, skillName);
-  const skills = await listSkills(runner);
+  const skills = await listSkills(runner, skillName);
   const existing = skills.find((skill) => skill.name === skillName);
   const plan = buildPlan({
     source: sourceBundle,
