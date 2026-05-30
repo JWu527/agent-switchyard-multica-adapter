@@ -59,6 +59,16 @@ const INSPECT_CAPABILITY_COMMANDS: Record<InspectCapabilityKey, string> = {
 };
 
 const AGENT_BINDING_FIELD_KEYS = ["skills", "skillNames", "boundSkills", "skillBindings"] as const;
+const BINDING_ENTRY_FIELD_KEYS = [
+  "skill",
+  "skillName",
+  "name",
+  "id",
+  "skills",
+  "skillNames",
+  "boundSkills",
+  "skillBindings"
+] as const;
 
 function stringifyError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -240,9 +250,39 @@ function agentListBindingStatus(agents: SafeListResult, skillName: string): bool
   return sawExplicitBindingField ? false : undefined;
 }
 
+function bindingEntryStatus(item: unknown, skillName: string): boolean | undefined {
+  if (typeof item === "string") return item === skillName;
+  if (item === null || typeof item !== "object") return undefined;
+
+  const record = item as Record<string, unknown>;
+  let sawBindingField = false;
+  for (const key of BINDING_ENTRY_FIELD_KEYS) {
+    if (!(key in record)) continue;
+    sawBindingField = true;
+    if (itemContainsSkill(record[key], skillName)) return true;
+  }
+
+  return sawBindingField ? false : undefined;
+}
+
+function bindingListStatus(bindings: SafeListResult, skillName: string): boolean | undefined {
+  if (!bindings.ok) return undefined;
+  if (bindings.result.length === 0) return false;
+
+  let allEntriesParsed = true;
+  for (const binding of bindings.result) {
+    const status = bindingEntryStatus(binding, skillName);
+    if (status === true) return true;
+    if (status === undefined) allEntriesParsed = false;
+  }
+
+  return allEntriesParsed ? false : undefined;
+}
+
 function hasSkillBinding(skillName: string, agents: SafeListResult, bindings: SafeListResult): boolean | undefined {
-  if (bindings.ok && bindings.result.some((item) => itemContainsSkill(item, skillName))) return true;
-  if (bindings.ok) return false;
+  const bindingStatus = bindingListStatus(bindings, skillName);
+  if (bindingStatus !== undefined) return bindingStatus;
+  if (bindings.ok) return undefined;
   return agentListBindingStatus(agents, skillName);
 }
 
