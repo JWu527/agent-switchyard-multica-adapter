@@ -1,0 +1,27 @@
+{
+  "name": "switchyard-multica",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "switchyard-multica": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "MULTICA_INTEGRATION=1 vitest run test/integration",
+    "check": "npm run build && npm test"
+  },
+  "dependencies": {
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.15",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
