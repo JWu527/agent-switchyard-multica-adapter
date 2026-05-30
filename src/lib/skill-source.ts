@@ -37,6 +37,12 @@ function relativePathInsideRoot(root: string, absolutePath: string): string {
   return rel;
 }
 
+function validateSourceDirInput(sourceDir: string): void {
+  if (sourceDir.split(/[\\/]+/).includes("..")) {
+    throw new UserError(`Refusing source path containing traversal: ${sourceDir}`);
+  }
+}
+
 function isAllowedPath(rel: string): boolean {
   if (rel === "SKILL.md") return true;
   const [topLevel] = rel.split("/");
@@ -88,6 +94,8 @@ async function walkSource(root: string, directory: string, out: SkillSourceFile[
 }
 
 export async function collectSkillSource(sourceDir: string, skillName: string): Promise<SkillSource> {
+  validateSourceDirInput(sourceDir);
+
   const root = resolve(sourceDir);
   const rootInfo = await lstat(root).catch(() => {
     throw new UserError(`Source directory does not exist: ${sourceDir}`);

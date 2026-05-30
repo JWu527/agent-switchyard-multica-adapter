@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MANIFEST_PATH } from "../src/lib/manifest.js";
 import { collectSkillSource } from "../src/lib/skill-source.js";
@@ -83,6 +83,16 @@ describe("collectSkillSource", () => {
 
     await expect(collectSkillSource(linkRoot, "agent-switchyard")).rejects.toThrow(
       "Refusing symlinked source root"
+    );
+  });
+
+  it("rejects caller-provided source paths containing traversal segments", async () => {
+    const root = await fixtureRoot();
+    const parent = dirname(root);
+    const traversalRoot = `${parent}/../${basename(parent)}/${basename(root)}`;
+
+    await expect(collectSkillSource(traversalRoot, "agent-switchyard")).rejects.toThrow(
+      "Refusing source path containing traversal"
     );
   });
 
