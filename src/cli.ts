@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { runBind } from "./commands/bind.js";
 import { runInspect } from "./commands/inspect.js";
 import { runPublish } from "./commands/publish.js";
+import { runSyncLocal } from "./commands/sync-local.js";
 import { runVerify } from "./commands/verify.js";
 import { formatUnknownError, UserError } from "./lib/errors.js";
 import { MulticaCli } from "./lib/multica-cli.js";
@@ -42,6 +43,21 @@ program
   .option("--dry-run", "Print planned writes without modifying Multica")
   .option("--json", "Output JSON")
   .action(async (options) => runBind(runner, options));
+
+program
+  .command("sync-local")
+  .description("Sync skill source into explicit local runtime skill directories")
+  .option("--source <dir>", "Agent Switchyard skill source directory")
+  .option("--skill-name <name>", "Skill name", "agent-switchyard")
+  .option("--target <target>", "Local target", (value, previous: string[] = []) => [...previous, value], [])
+  .option("--target-dir <target=path>", "Override target directory", (value, previous: string[] = []) => [
+    ...previous,
+    value
+  ], [])
+  .option("--dry-run", "Print planned writes without modifying local directories")
+  .option("--force", "Take ownership of an existing non-empty target directory")
+  .option("--json", "Output JSON")
+  .action(async (options) => runSyncLocal(options));
 
 program
   .command("verify")
