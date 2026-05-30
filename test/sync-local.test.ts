@@ -51,6 +51,53 @@ describe("runSyncLocal", () => {
     });
   });
 
+  it("rejects traversal skill names before planning target paths", async () => {
+    const source = await skillFixture();
+    const homeDir = tempHome();
+
+    await expect(
+      runSyncLocal({
+        source,
+        skillName: "../../.ssh",
+        target: ["openclaw"],
+        homeDir,
+        dryRun: true
+      })
+    ).rejects.toThrow("Invalid skill name");
+    await expect(readdir(join(homeDir, ".switchyard-multica"))).rejects.toThrow();
+  });
+
+  it("rejects duplicate target names before dry-run planning", async () => {
+    const source = await skillFixture();
+
+    await expect(
+      runSyncLocal({
+        source,
+        skillName: "agent-switchyard",
+        target: ["openclaw", "openclaw"],
+        homeDir: tempHome(),
+        dryRun: true
+      })
+    ).rejects.toThrow("Duplicate target");
+  });
+
+  it("rejects duplicate resolved target directories before dry-run planning", async () => {
+    const source = await skillFixture();
+    const homeDir = tempHome();
+    const targetDir = join(homeDir, "shared-target");
+
+    await expect(
+      runSyncLocal({
+        source,
+        skillName: "agent-switchyard",
+        target: ["openclaw", "hermes"],
+        targetDir: [`openclaw=${targetDir}`, `hermes=${targetDir}`],
+        homeDir,
+        dryRun: true
+      })
+    ).rejects.toThrow("Duplicate target directory");
+  });
+
   it("dry-runs without creating target or backup directories", async () => {
     const source = await skillFixture();
     const homeDir = tempHome();

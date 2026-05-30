@@ -3,7 +3,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { UserError } from "../lib/errors.js";
 import { sha256 } from "../lib/hash.js";
-import { parseTargetDirOverrides, resolveTargetDir } from "../lib/local-targets.js";
+import { parseTargetDirOverrides, resolveTargetDir, validateSkillNameSegment } from "../lib/local-targets.js";
 import { collectSkillSource, type SkillSource, type SkillSourceFile } from "../lib/skill-source.js";
 
 const MARKER = ".switchyard-multica.json";
@@ -41,6 +41,11 @@ interface TargetPlan {
   filesToWrite: string[];
 }
 
+interface ResolvedTarget {
+  target: string;
+  targetDir: string;
+}
+
 interface SyncLocalPayload {
   dryRun: boolean;
   skillName: string;
@@ -75,16 +80,19 @@ function toArray(value: string[] | string | undefined): string[] {
 
 function resolveSyncInput(options: SyncLocalOptions): { source: string; skillName: string; targets: string[] } {
   const source = options.source ?? process.env.SWITCHYARD_SKILL_SOURCE;
-  const skillName = options.skillName ?? process.env.SWITCHYARD_SKILL_NAME ?? "agent-switchyard";
+  const skillName = validateSkillNameSegment(options.skillName ?? process.env.SWITCHYARD_SKILL_NAME ?? "agent-switchyard");
   const targets = toArray(options.target).map((target) => target.trim()).filter((target) => target.length > 0);
 
   if (source === undefined || source.trim().length === 0) {
     throw new UserError("Missing --source or SWITCHYARD_SKILL_SOURCE");
   }
-  if (skillName.trim().length === 0) {
-    throw new UserError("Missing --skill-name or SWITCHYARD_SKILL_NAME");
-  }
   if (targets.length === 0) throw new UserError("sync-local requires at least one --target");
+
+  const seenTargets = new Set<string>();
+  for (const target of targets) {
+    if (seenTargets.has(target)) throw new UserError(`Duplicate target: ${target}`);
+    seenTargets.add(target);
+  }
 
   return { source, skillName, targets };
 }
@@ -191,6 +199,14 @@ function safeTargetPath(targetDir: string, relativePath: string): string {
   return destination;
 }
 
+function assertPathInsideRoot(path: string, root: string, label: string): void {
+  const resolvedRoot = resolve(root);
+  const resolvedPath = resolve(path);
+  if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(`${resolvedRoot}${sep}`)) {
+    throw new UserError(`${label} escapes expected root: ${resolvedPath}`);
+  }
+}
+
 async function backupTarget(targetDir: string, backupDir: string): Promise<void> {
   await rm(backupDir, { recursive: true, force: true });
   await mkdir(dirname(backupDir), { recursive: true });
@@ -246,14 +262,14 @@ async function verifyTargetFiles(targetDir: string, files: readonly FileRecord[]
 
 async function buildTargetPlan(input: {
   target: string;
+  targetDir: string;
   skillName: string;
   source: SkillSource;
   homeDir: string;
   backupTimestamp: string;
-  overrides: ReturnType<typeof parseTargetDirOverrides>;
   files: FileRecord[];
 }): Promise<TargetPlan> {
-  const targetDir = resolveTargetDir(input.target, input.skillName, input.overrides, input.homeDir);
+  const targetDir = input.targetDir;
   const state = await readTargetState(targetDir);
   const markerRead = state.isDirectory ? await readMarker(targetDir) : { exists: false };
   const mismatchReasons = markerMismatchReasons({
@@ -276,9 +292,38 @@ async function buildTargetPlan(input: {
     markerMismatchReasons: mismatchReasons,
     wouldOverwrite: state.exists,
     forceRequired,
-    backupDir: join(input.homeDir, ".switchyard-multica", "backups", input.backupTimestamp, input.target, input.skillName),
+    backupDir: backupPath(input.homeDir, input.backupTimestamp, input.target, input.skillName),
     filesToWrite: input.files.map((file) => file.path)
   };
+}
+
+function backupPath(homeDir: string, backupTimestamp: string, target: string, skillName: string): string {
+  const root = join(homeDir, ".switchyard-multica", "backups");
+  const path = join(root, backupTimestamp, target, skillName);
+  assertPathInsideRoot(path, root, "Backup path");
+  return path;
+}
+
+function resolveTargetDirectories(input: {
+  targets: string[];
+  skillName: string;
+  homeDir: string;
+  overrides: ReturnType<typeof parseTargetDirOverrides>;
+}): ResolvedTarget[] {
+  const seenTargetDirs = new Map<string, string>();
+  const resolvedTargets: ResolvedTarget[] = [];
+
+  for (const target of input.targets) {
+    const targetDir = resolve(resolveTargetDir(target, input.skillName, input.overrides, input.homeDir));
+    const existingTarget = seenTargetDirs.get(targetDir);
+    if (existingTarget !== undefined) {
+      throw new UserError(`Duplicate target directory: ${targetDir} for targets ${existingTarget} and ${target}`);
+    }
+    seenTargetDirs.set(targetDir, target);
+    resolvedTargets.push({ target, targetDir });
+  }
+
+  return resolvedTargets;
 }
 
 function outputPayload(payload: SyncLocalPayload, options: SyncLocalOptions): void {
@@ -314,16 +359,17 @@ export async function runSyncLocal(options: SyncLocalOptions): Promise<void> {
   const hash = sourceHash(files);
   const homeDir = options.homeDir ?? homedir();
   const { backupTimestamp, lastSyncAt } = syncClock(options);
+  const resolvedTargets = resolveTargetDirectories({ targets, skillName, homeDir, overrides: targetDirOverrides });
 
   const plans: TargetPlan[] = [];
-  for (const target of targets) {
+  for (const resolvedTarget of resolvedTargets) {
     plans.push(await buildTargetPlan({
-      target,
+      target: resolvedTarget.target,
+      targetDir: resolvedTarget.targetDir,
       skillName,
       source: sourceBundle,
       homeDir,
       backupTimestamp,
-      overrides: targetDirOverrides,
       files
     }));
   }

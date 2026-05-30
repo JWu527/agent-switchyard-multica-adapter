@@ -41,6 +41,12 @@ describe("resolveTargetDir", () => {
     expect(resolveTargetDir("openclaw", "agent-switchyard", overrides, "/Users/test")).toBe("/custom/openclaw");
   });
 
+  it("rejects unsafe skill names used as path segments", () => {
+    for (const skillName of ["", "  ", ".", "..", "../../.ssh", "nested/skill", "nested\\skill", "bad\0name"]) {
+      expect(() => resolveTargetDir("openclaw", skillName, {}, "/Users/test")).toThrow("Invalid skill name");
+    }
+  });
+
   it("rejects unknown targets", () => {
     expect(() => resolveTargetDir("bad", "agent-switchyard", {}, "/Users/test")).toThrow("Unknown target");
   });
@@ -49,6 +55,12 @@ describe("resolveTargetDir", () => {
     expect(() => parseTargetDirOverrides(["openclaw"])).toThrow("Invalid --target-dir value");
     expect(() => parseTargetDirOverrides(["=custom"])).toThrow("Invalid --target-dir value");
     expect(() => parseTargetDirOverrides(["openclaw="])).toThrow("Invalid --target-dir value");
+  });
+
+  it("rejects dangerous target-dir override values", () => {
+    expect(() => parseTargetDirOverrides(["openclaw=relative/path"])).toThrow("Invalid --target-dir value");
+    expect(() => parseTargetDirOverrides(["openclaw=/tmp/../escape"])).toThrow("Invalid --target-dir value");
+    expect(() => parseTargetDirOverrides(["openclaw=/tmp/bad\0path"])).toThrow("Invalid --target-dir value");
   });
 
   it("rejects unknown target-dir override keys", () => {
